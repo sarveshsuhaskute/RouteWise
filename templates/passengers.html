@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block title %}Passengers{% endblock %}
+{% block content %}
+{% set cards = ['None', 'Daily', 'Weekly', 'Monthly'] %}
+<div class="page-head">
+    <div><h1>Passengers</h1><p>Create, edit and remove registered passengers.</p></div>
+    <button class="btn btn-brand w-staff" data-bs-toggle="modal" data-bs-target="#addModal"><i class="bi bi-person-plus me-1"></i>Add passenger</button>
+</div>
+
+<div class="card">
+    <div class="card-header"><span><i class="bi bi-people me-2"></i>Directory <span class="text-muted fw-normal">({{ passengers | length }})</span></span>
+        <input type="search" class="form-control form-control-sm search" placeholder="Search passengers…" data-filter="paxTable"></div>
+    <div class="table-wrap"><table class="table table-hover align-middle" id="paxTable">
+        <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Card</th><th>Trips</th><th>Spent</th><th></th></tr></thead>
+        <tbody>
+        {% for p in passengers %}
+            <tr>
+                <td>{{ p.PassengerID }}</td><td class="fw-semibold">{{ p.Name }}</td><td>{{ p.Email }}</td><td>{{ p.Phone or '—' }}</td>
+                <td><span class="pill {{ {'Monthly':'pill-violet','Weekly':'pill-blue','Daily':'pill-amber'}.get(p.CardType, 'pill-grey') }}">{{ p.CardType }}</span></td>
+                <td>{{ p.Trips }}</td><td>{{ p.Spent | money }}</td>
+                <td class="text-end text-nowrap">
+                    <button class="btn btn-sm btn-outline-secondary w-staff" data-edit="editModal"
+                        data-action="{{ url_for('edit_passenger', pid=p.PassengerID) }}"
+                        data-fields='{{ {"name": p.Name, "email": p.Email, "phone": p.Phone, "dob": p.DOB.isoformat() if p.DOB else "", "card_type": p.CardType} | tojson | forceescape }}'>
+                        <i class="bi bi-pencil"></i></button>
+                    <form class="d-inline w-admin" action="{{ url_for('delete_passenger', pid=p.PassengerID) }}" method="POST" data-confirm="Delete {{ p.Name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+{% if role in ('staff', 'admin') %}
+{% macro passenger_fields() %}
+    <div class="row g-3">
+        <div class="col-12"><label class="form-label">Full name</label><input name="name" class="form-control" required maxlength="100"></div>
+        <div class="col-12"><label class="form-label">Email</label><input name="email" type="email" class="form-control" required maxlength="100"></div>
+        <div class="col-md-6"><label class="form-label">Phone</label><input name="phone" class="form-control" maxlength="15"></div>
+        <div class="col-md-6"><label class="form-label">Date of birth</label><input name="dob" type="date" class="form-control"></div>
+        <div class="col-12"><label class="form-label">Travel card</label>
+            <select name="card_type" class="form-select">{% for c in cards %}<option>{{ c }}</option>{% endfor %}</select></div>
+    </div>
+{% endmacro %}
+
+<div class="modal fade" id="addModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_passenger') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Add passenger</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">{{ passenger_fields() }}</div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Save</button></div>
+</form></div></div>
+
+<div class="modal fade" id="editModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Edit passenger</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">{{ passenger_fields() }}</div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Update</button></div>
+</form></div></div>
+{% endif %}
+
+{% endblock %}

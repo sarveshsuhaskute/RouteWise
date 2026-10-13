@@ -1,0 +1,102 @@
+{% extends 'base.html' %}
+{% block title %}Fleet & Drivers{% endblock %}
+{% block content %}
+{% set status_pill = {'Active': 'pill-green', 'Maintenance': 'pill-amber', 'Retired': 'pill-red'} %}
+<div class="page-head">
+    <div><h1>Fleet &amp; Drivers</h1><p>Vehicles can only take bookings while their status is <em>Active</em>.</p></div>
+    <div class="w-admin">
+        <button class="btn btn-outline-secondary me-1" data-bs-toggle="modal" data-bs-target="#driverModal"><i class="bi bi-person-badge me-1"></i>Add driver</button>
+        <button class="btn btn-brand" data-bs-toggle="modal" data-bs-target="#addVehicle"><i class="bi bi-plus-lg me-1"></i>Add vehicle</button>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><span><i class="bi bi-bus-front me-2"></i>Vehicles <span class="text-muted fw-normal">({{ vehicles | length }})</span></span>
+        <input type="search" class="form-control form-control-sm search" placeholder="Search vehicles…" data-filter="vehTable"></div>
+    <div class="table-wrap"><table class="table table-hover align-middle" id="vehTable">
+        <thead><tr><th>Vehicle</th><th>Type</th><th>Model</th><th>Capacity</th><th>Driver</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+        {% for v in vehicles %}
+            <tr>
+                <td class="fw-semibold">{{ v.VehicleNo }}</td>
+                <td><i class="bi bi-{{ 'train-front' if v.Type == 'Metro' else 'bus-front' }} me-1"></i>{{ v.Type }}</td>
+                <td>{{ v.Model or '—' }}</td><td>{{ v.Capacity }} seats</td>
+                <td>{{ v.DriverName or 'Unassigned' }}</td>
+                <td><span class="pill {{ status_pill.get(v.Status, 'pill-grey') }}">{{ v.Status }}</span></td>
+                <td class="text-end text-nowrap">
+                    <button class="btn btn-sm btn-outline-secondary w-admin" data-edit="editVehicle"
+                        data-action="{{ url_for('edit_vehicle', vid=v.VehicleID) }}"
+                        data-fields='{{ {"vehicle_no": v.VehicleNo, "type": v.Type, "capacity": v.Capacity, "model": v.Model, "status": v.Status, "driver_id": v.DriverID} | tojson | forceescape }}'>
+                        <i class="bi bi-pencil"></i></button>
+                    <form class="d-inline w-admin" action="{{ url_for('delete_vehicle', vid=v.VehicleID) }}" method="POST" data-confirm="Delete {{ v.VehicleNo }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+<div class="card">
+    <div class="card-header"><i class="bi bi-person-badge me-2"></i>Drivers</div>
+    <div class="table-wrap"><table class="table table-hover align-middle">
+        <thead><tr><th>ID</th><th>Name</th><th>Licence</th><th>Shift</th><th>Phone</th><th>Assigned vehicle</th><th></th></tr></thead>
+        <tbody>
+        {% for d in drivers %}
+            <tr>
+                <td>{{ d.DriverID }}</td><td class="fw-semibold">{{ d.Name }}</td><td>{{ d.LicenseNo }}</td>
+                <td>{{ d.ShiftHours }} h</td><td>{{ d.Phone or '—' }}</td>
+                <td>{% if d.VehicleNo %}{{ d.VehicleNo }}{% else %}<span class="pill pill-grey">Available</span>{% endif %}</td>
+                <td class="text-end">
+                    <form class="w-admin" action="{{ url_for('delete_driver', did=d.DriverID) }}" method="POST" data-confirm="Delete driver {{ d.Name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+{% if role == 'admin' %}
+{% macro vehicle_fields() %}
+    <div class="row g-3">
+        <div class="col-md-6"><label class="form-label">Vehicle number</label><input name="vehicle_no" class="form-control" required maxlength="20"></div>
+        <div class="col-md-6"><label class="form-label">Type</label>
+            <select name="type" class="form-select"><option>Bus</option><option>Metro</option><option>Tram</option></select></div>
+        <div class="col-md-6"><label class="form-label">Capacity</label><input name="capacity" type="number" min="1" class="form-control" required></div>
+        <div class="col-md-6"><label class="form-label">Model</label><input name="model" class="form-control" maxlength="50"></div>
+        <div class="col-md-6"><label class="form-label">Status</label>
+            <select name="status" class="form-select"><option>Active</option><option>Maintenance</option><option>Retired</option></select></div>
+        <div class="col-md-6"><label class="form-label">Driver</label>
+            <select name="driver_id" class="form-select"><option value="">Unassigned</option>
+                {% for d in drivers %}<option value="{{ d.DriverID }}">{{ d.Name }}</option>{% endfor %}</select></div>
+    </div>
+{% endmacro %}
+
+<div class="modal fade" id="addVehicle" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_vehicle') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Add vehicle</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">{{ vehicle_fields() }}</div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Save</button></div>
+</form></div></div>
+
+<div class="modal fade" id="editVehicle" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Edit vehicle</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">{{ vehicle_fields() }}</div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Update</button></div>
+</form></div></div>
+
+<div class="modal fade" id="driverModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_driver') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Add driver</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><div class="row g-3">
+        <div class="col-12"><label class="form-label">Name</label><input name="name" class="form-control" required maxlength="100"></div>
+        <div class="col-md-6"><label class="form-label">Licence no.</label><input name="license_no" class="form-control" required maxlength="50"></div>
+        <div class="col-md-3"><label class="form-label">Shift (h)</label><input name="shift_hours" type="number" min="1" max="12" value="8" class="form-control"></div>
+        <div class="col-md-3"><label class="form-label">Phone</label><input name="phone" class="form-control" maxlength="15"></div>
+    </div></div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Save</button></div>
+</form></div></div>
+{% endif %}
+
+{% endblock %}

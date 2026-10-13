@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block title %}{{ title or 'Error' }}{% endblock %}
+{% block content %}
+<div class="card mt-5 mx-auto" style="max-width: 560px;">
+    <div class="card-body text-center py-5">
+        <i class="bi bi-{{ icon or 'exclamation-triangle' }} text-danger" style="font-size: 3rem;"></i>
+        <h2 class="h4 mt-3">{{ title or 'Something went wrong' }}{% if code %} <span class="text-muted fs-6">({{ code }})</span>{% endif %}</h2>
+        <p class="text-muted mb-1">{{ message }}</p>
+        {% if hint %}<p class="small text-muted">{{ hint }}</p>{% endif %}
+        <a class="btn btn-brand mt-2" href="{{ url_for('index') }}">Back to the dashboard</a>
+        {% if not current_user %}<a class="btn btn-outline-secondary mt-2 ms-1" href="{{ url_for('login') }}">Sign in</a>{% endif %}
+    </div>
+</div>
+{% endblock %}

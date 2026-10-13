@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div><h1>SQL Reports</h1><p>Each report shows the exact query behind it — joins, aggregates, HAVING, subqueries and views.</p></div>
+</div>
+
+<div class="row g-3">
+    {% for r in reports %}
+    <div class="col-xl-6">
+        <div class="card h-100">
+            <div class="card-header"><span><span class="pill pill-violet me-2">{{ loop.index }}</span>{{ r.title }}</span></div>
+            <div class="card-body">
+                <p class="text-muted small mb-2">{{ r.desc }}</p>
+                <div class="table-wrap"><table class="table table-sm table-hover align-middle">
+                    <thead><tr>{% for c in r.cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+                    <tbody>
+                    {% for row in r.rows %}
+                        <tr>{% for c in r.cols %}<td>{{ row[c] | fmt }}</td>{% endfor %}</tr>
+                    {% else %}
+                        <tr><td class="text-muted text-center py-3">No rows.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table></div>
+                <details class="sql"><summary><i class="bi bi-code-slash me-1"></i>Show SQL</summary><pre>{{ r.sql }}</pre></details>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
