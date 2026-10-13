@@ -76,7 +76,7 @@ erDiagram
 | Indexes | `Ticket.PassengerID`, `Schedule.RouteID`, `Schedule.VehicleID`, `Feedback.RouteID`, plus the unique seat key | Faster joins — measured on 200,000 rows (see below) |
 | Privileges | user `transitiq_app` | Read/write business tables, **read-only audit table**, execute routines, nothing else |
 
-### Normalisation: every relation is in BCNF
+## Normalisation: every relation is in BCNF
 Each non-trivial functional dependency has a candidate key on its left side:
 
 | Relation | Functional dependencies (candidate keys on the left) |
