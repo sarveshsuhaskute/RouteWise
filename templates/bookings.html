@@ -1,0 +1,101 @@
+{% extends 'base.html' %}
+{% block title %}Bookings{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div><h1>Bookings</h1><p>Book through the <code>BookTicket</code> procedure; triggers block taken seats and full vehicles.</p></div>
+</div>
+
+<div class="card mb-3 w-staff">
+    <div class="card-header"><i class="bi bi-plus-circle me-2"></i>Book a ticket</div>
+    <div class="card-body">
+        <form action="{{ url_for('book_ticket') }}" method="POST" class="row g-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-md-3">
+                <label class="form-label">Passenger</label>
+                <select name="p_id" class="form-select" required>
+                    <option value="" disabled selected>Select passenger…</option>
+                    {% for p in passengers %}<option value="{{ p.PassengerID }}">{{ p.Name }} ({{ p.CardType }})</option>{% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Schedule</label>
+                <select name="s_id" class="form-select" required>
+                    <option value="" disabled selected>Select departure…</option>
+                    {% for s in schedules %}
+                    <option value="{{ s.ScheduleID }}" {{ 'disabled' if s.Left_ <= 0 }}>
+                        #{{ s.ScheduleID }} · {{ s.RouteName }} · {{ s.DepartureTime | fmt }} · {{ s.VehicleNo }} ({{ s.Left_ }} seats left)
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Seat No</label>
+                <input type="text" name="seat" class="form-control" placeholder="e.g. A5" maxlength="10" required>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Fare (₹) <span class="fw-normal">· auto</span></label>
+                <input type="number" name="fare" id="fare" class="form-control" placeholder="auto-calculated" min="0.01" step="0.01">
+            </div>
+            <div class="col-md-1 d-flex align-items-end">
+                <button class="btn btn-brand w-100"><i class="bi bi-check2"></i></button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><span><i class="bi bi-list-ul me-2"></i>All bookings <span class="text-muted fw-normal">({{ bookings | length }})</span></span>
+        <span class="d-flex gap-2"><input type="search" class="form-control form-control-sm search" placeholder="Search bookings…" data-filter="bookingTable">
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('export_bookings') }}"><i class="bi bi-download me-1"></i>CSV</a></span></div>
+    <div class="table-wrap"><table class="table table-hover align-middle" id="bookingTable">
+        <thead><tr><th>Ticket</th><th>Passenger</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Seat</th><th>Fare</th><th>Booked on</th><th></th></tr></thead>
+        <tbody>
+        {% for b in bookings %}
+            <tr>
+                <td>#{{ b.TicketID }}</td><td class="fw-semibold">{{ b.PassengerName }}</td><td>{{ b.RouteName }}</td><td>{{ b.VehicleNo }}</td>
+                <td>{{ b.DepartureTime | fmt }}</td><td><span class="pill pill-blue">{{ b.SeatNo }}</span></td>
+                <td>{{ b.Fare | money }}</td><td class="text-muted small">{{ b.BookingDate | fmt }}</td>
+                <td class="text-end text-nowrap">
+                    {% if role in ('staff', 'admin') %}
+                    <button type="button" class="btn btn-sm btn-outline-secondary w-staff" title="Move to another departure or seat" data-edit="transferModal"
+                        data-action="{{ url_for('transfer_ticket', ticket_id=b.TicketID) }}" data-fields='{}'><i class="bi bi-arrow-left-right"></i></button>
+                    <form class="d-inline w-staff" action="{{ url_for('cancel_ticket', ticket_id=b.TicketID) }}" method="POST" data-confirm="Cancel ticket #{{ b.TicketID }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger" title="Cancel ticket"><i class="bi bi-x-lg"></i></button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="9" class="text-center text-muted py-4">No bookings yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+{% if role in ('staff', 'admin') %}
+<div class="modal fade" id="transferModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Transfer ticket</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><div class="row g-3">
+        <p class="small text-muted mb-0">One all-or-nothing transaction (<code>TransferTicket</code>): if the new seat is taken or the vehicle is full, the original ticket stays exactly as it was. The fare is recalculated for the new departure.</p>
+        <div class="col-12"><label class="form-label">New departure</label>
+            <select name="s_id" class="form-select" required>
+                {% for s in schedules %}<option value="{{ s.ScheduleID }}" {{ 'disabled' if s.Left_ <= 0 }}>#{{ s.ScheduleID }} · {{ s.RouteName }} · {{ s.DepartureTime | fmt }} ({{ s.Left_ }} seats left)</option>{% endfor %}
+            </select></div>
+        <div class="col-12"><label class="form-label">New seat</label><input name="seat" class="form-control" maxlength="10" required placeholder="e.g. B7"></div>
+    </div></div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Transfer</button></div>
+</form></div></div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Show the calculated fare (CalcFare in MySQL) as soon as passenger + schedule are chosen
+    var p = document.querySelector('[name=p_id]'), s = document.querySelector('[name=s_id]'), fare = document.getElementById('fare');
+    function suggestFare() {
+        if (!p || !p.value || !s.value) return;
+        fetch('{{ url_for("api_fare") }}?p=' + p.value + '&s=' + s.value).then(function (r) { return r.json(); })
+            .then(function (d) { if (d.fare !== null) { fare.value = d.fare; } });
+    }
+    if (p) { p.addEventListener('change', suggestFare); s.addEventListener('change', suggestFare); }
+</script>
+{% endblock %}

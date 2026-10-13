@@ -1,0 +1,99 @@
+{
+  "rows": 200000,
+  "load_seconds": 1.0,
+  "results": [
+    {
+      "query": "Passenger history: WHERE PassengerID = ?",
+      "index": "idx_ticket_passenger",
+      "with_ms": 0.2,
+      "without_ms": 18.26,
+      "speedup": 91.3,
+      "with_plan": [
+        {
+          "table": "TicketBench",
+          "type": "ref",
+          "key": "idx_ticket_passenger",
+          "rows": 40
+        }
+      ],
+      "without_plan": [
+        {
+          "table": "TicketBench",
+          "type": "ALL",
+          "key": null,
+          "rows": 199589
+        }
+      ]
+    },
+    {
+      "query": "Seat lookup: WHERE ScheduleID = ? AND SeatNo = ?",
+      "index": "uq_schedule_seat",
+      "with_ms": 0.15,
+      "without_ms": 23.82,
+      "speedup": 158.8,
+      "with_plan": [
+        {
+          "table": "TicketBench",
+          "type": "const",
+          "key": "uq_schedule_seat",
+          "rows": 1
+        }
+      ],
+      "without_plan": [
+        {
+          "table": "TicketBench",
+          "type": "ALL",
+          "key": null,
+          "rows": 199589
+        }
+      ]
+    },
+    {
+      "query": "Passenger spend per route (3-table join)",
+      "index": "idx_ticket_passenger",
+      "with_ms": 0.29,
+      "without_ms": 22.54,
+      "speedup": 77.7,
+      "with_plan": [
+        {
+          "table": "T",
+          "type": "ref",
+          "key": "idx_ticket_passenger",
+          "rows": 40
+        },
+        {
+          "table": "S",
+          "type": "eq_ref",
+          "key": "PRIMARY",
+          "rows": 1
+        },
+        {
+          "table": "R",
+          "type": "eq_ref",
+          "key": "PRIMARY",
+          "rows": 1
+        }
+      ],
+      "without_plan": [
+        {
+          "table": "R",
+          "type": "ALL",
+          "key": null,
+          "rows": 5
+        },
+        {
+          "table": "S",
+          "type": "ref",
+          "key": "idx_schedule_route",
+          "rows": 2
+        },
+        {
+          "table": "T",
+          "type": "ref",
+          "key": "uq_schedule_seat",
+          "rows": 22176
+        }
+      ]
+    }
+  ]
+}

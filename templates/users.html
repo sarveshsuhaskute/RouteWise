@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div><h1>Users &amp; Roles</h1><p><b>admin</b> manages everything · <b>staff</b> handles bookings, passengers and feedback · <b>viewer</b> is read-only.</p></div>
+    <button class="btn btn-brand" data-bs-toggle="modal" data-bs-target="#userModal"><i class="bi bi-person-plus me-1"></i>Add user</button>
+</div>
+<div class="card">
+    <div class="table-wrap"><table class="table table-hover align-middle">
+        <thead><tr><th>ID</th><th>Username</th><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+        {% for u in users %}
+            <tr>
+                <td>{{ u.UserID }}</td><td class="fw-semibold">{{ u.Username }}</td><td>{{ u.FullName }}</td>
+                <td><span class="pill {{ {'admin':'pill-red','staff':'pill-blue','viewer':'pill-grey'}[u.Role] }}">{{ u.Role }}</span></td>
+                <td class="text-muted small">{{ u.CreatedAt | fmt }}</td>
+                <td class="text-end">{% if u.UserID != current_user.id %}
+                    <form method="POST" action="{{ url_for('delete_user', uid=u.UserID) }}" data-confirm="Delete user {{ u.Username }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>{% else %}<span class="text-muted small">you</span>{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+<div class="modal fade" id="userModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_user') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Add user</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><div class="row g-3">
+        <div class="col-md-6"><label class="form-label">Username</label><input name="username" class="form-control" required maxlength="50"></div>
+        <div class="col-md-6"><label class="form-label">Full name</label><input name="full_name" class="form-control" maxlength="100"></div>
+        <div class="col-md-6"><label class="form-label">Password (min 6)</label><input name="password" type="password" minlength="6" class="form-control" required autocomplete="new-password"></div>
+        <div class="col-md-6"><label class="form-label">Role</label><select name="role" class="form-select"><option>viewer</option><option>staff</option><option>admin</option></select></div>
+    </div></div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Create</button></div>
+</form></div></div>
+{% endblock %}

@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div>
+        <h1>Dashboard</h1>
+        <p>Live overview of bookings, fleet and passenger satisfaction.</p>
+    </div>
+    <a href="{{ url_for('bookings') }}" class="btn btn-brand w-staff"><i class="bi bi-plus-lg me-1"></i>New booking</a>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-6 col-lg-3"><div class="card stat-card">
+        <div class="stat-icon bg-g1"><i class="bi bi-ticket-perforated"></i></div>
+        <div><div class="stat-value">{{ stats.tickets }}</div><div class="stat-label">Tickets sold</div></div>
+    </div></div>
+    <div class="col-6 col-lg-3"><div class="card stat-card">
+        <div class="stat-icon bg-g2"><i class="bi bi-currency-rupee"></i></div>
+        <div><div class="stat-value">{{ stats.revenue | money }}</div><div class="stat-label">Total revenue</div></div>
+    </div></div>
+    <div class="col-6 col-lg-3"><div class="card stat-card">
+        <div class="stat-icon bg-g4"><i class="bi bi-people"></i></div>
+        <div><div class="stat-value">{{ stats.passengers }}</div><div class="stat-label">Registered passengers</div></div>
+    </div></div>
+    <div class="col-6 col-lg-3"><div class="card stat-card">
+        <div class="stat-icon bg-g3"><i class="bi bi-bus-front"></i></div>
+        <div><div class="stat-value">{{ stats.vehicles }}<small class="text-muted fs-6"> / {{ stats.total_vehicles }}</small></div><div class="stat-label">Vehicles in service</div></div>
+    </div></div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header"><span><i class="bi bi-bar-chart me-2"></i>Revenue by route</span>
+                <span class="pill pill-violet"><i class="bi bi-star-fill me-1"></i>{{ stats.rating or '—' }} avg rating</span></div>
+            <div class="card-body"><div style="height:280px"><canvas id="revChart"></canvas></div></div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header"><i class="bi bi-speedometer me-2"></i>Busiest departures</div>
+            <div class="card-body">
+                {% for o in occupancy[:6] %}
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between small">
+                        <span class="fw-semibold">{{ o.RouteName }} <span class="text-muted">· {{ o.DepartureTime | fmt }}</span></span>
+                        <span class="text-muted">{{ o.OccupancyPct }}% · {{ o.SeatsLeft }} left</span>
+                    </div>
+                    <div class="occ mt-1"><span style="width: {{ [o.OccupancyPct | float, 2] | max }}%"></span></div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><span><i class="bi bi-clock-history me-2"></i>Recent bookings</span>
+        <a href="{{ url_for('bookings') }}" class="small text-decoration-none">View all →</a></div>
+    <div class="table-wrap"><table class="table table-hover align-middle">
+        <thead><tr><th>Ticket</th><th>Passenger</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Seat</th><th>Fare</th></tr></thead>
+        <tbody>
+        {% for b in recent %}
+            <tr><td>#{{ b.TicketID }}</td><td>{{ b.PassengerName }}</td><td>{{ b.RouteName }}</td><td>{{ b.VehicleNo }}</td>
+                <td>{{ b.DepartureTime | fmt }}</td><td><span class="pill pill-blue">{{ b.SeatNo }}</span></td><td>{{ b.Fare | money }}</td></tr>
+        {% else %}
+            <tr><td colspan="7" class="text-center text-muted py-4">No bookings yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+    var rev = {{ chart_revenue | tojson }};
+    new Chart(document.getElementById('revChart'), {
+        type: 'bar',
+        data: { labels: rev.labels, datasets: [{ label: 'Revenue (₹)', data: rev.values,
+            backgroundColor: ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ec4899'], borderRadius: 8 }] },
+        options: { maintainAspectRatio: false, plugins: { legend: { display: false } },
+                   scales: { y: { beginAtZero: true, grid: { color: '#e2e8f0' } }, x: { grid: { display: false } } } }
+    });
+</script>
+{% endblock %}

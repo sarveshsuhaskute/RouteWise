@@ -1,0 +1,80 @@
+{% extends 'base.html' %}
+{% block title %}Routes & Schedules{% endblock %}
+{% block content %}
+<div class="page-head">
+    <div><h1>Routes &amp; Schedules</h1><p>Plan routes and the departures that run on them.</p></div>
+    <div class="w-admin">
+        <button class="btn btn-outline-secondary me-1" data-bs-toggle="modal" data-bs-target="#routeModal"><i class="bi bi-signpost me-1"></i>Add route</button>
+        <button class="btn btn-brand" data-bs-toggle="modal" data-bs-target="#scheduleModal"><i class="bi bi-calendar-plus me-1"></i>Add schedule</button>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><i class="bi bi-signpost-split me-2"></i>Routes</div>
+    <div class="table-wrap"><table class="table table-hover align-middle">
+        <thead><tr><th>Route</th><th>From → To</th><th>Type</th><th>Distance</th><th>Tickets</th><th>Revenue</th><th></th></tr></thead>
+        <tbody>
+        {% for r in routes %}
+            <tr>
+                <td class="fw-semibold">{{ r.RouteName }}</td><td>{{ r.Origin }} <i class="bi bi-arrow-right text-muted"></i> {{ r.Destination }}</td>
+                <td><span class="pill {{ 'pill-violet' if r.Type == 'Metro' else 'pill-blue' }}">{{ r.Type }}</span></td>
+                <td>{{ r.Distance or '—' }} km</td><td>{{ r.TicketsSold }}</td><td>{{ r.Revenue | money }}</td>
+                <td class="text-end"><form class="w-admin" action="{{ url_for('delete_route', rid=r.RouteID) }}" method="POST" data-confirm="Delete route {{ r.RouteName }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+<div class="card">
+    <div class="card-header"><span><i class="bi bi-calendar3 me-2"></i>Schedules</span>
+        <input type="search" class="form-control form-control-sm search" placeholder="Search schedules…" data-filter="schTable"></div>
+    <div class="table-wrap"><table class="table table-hover align-middle" id="schTable">
+        <thead><tr><th>#</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Occupancy</th><th>Seats left</th><th></th></tr></thead>
+        <tbody>
+        {% for s in schedules %}
+            <tr>
+                <td>{{ s.ScheduleID }}</td><td class="fw-semibold">{{ s.RouteName }}</td>
+                <td>{{ s.VehicleNo }} {% if s.VehicleStatus != 'Active' %}<span class="pill pill-amber">{{ s.VehicleStatus }}</span>{% endif %}</td>
+                <td>{{ s.DepartureTime | fmt }}</td>
+                <td><div class="d-flex align-items-center gap-2"><div class="occ flex-grow-1"><span style="width: {{ s.OccupancyPct | float }}%"></span></div>
+                    <small class="text-muted">{{ s.OccupancyPct }}%</small></div></td>
+                <td>{{ s.SeatsLeft }} / {{ s.Capacity }}</td>
+                <td class="text-end"><form class="w-admin" action="{{ url_for('delete_schedule', sid=s.ScheduleID) }}" method="POST" data-confirm="Delete schedule #{{ s.ScheduleID }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+
+{% if role == 'admin' %}
+<div class="modal fade" id="routeModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_route') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Add route</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><div class="row g-3">
+        <div class="col-md-8"><label class="form-label">Route name</label><input name="route_name" class="form-control" required maxlength="100"></div>
+        <div class="col-md-4"><label class="form-label">Type</label><select name="type" class="form-select"><option>Bus</option><option>Metro</option></select></div>
+        <div class="col-md-6"><label class="form-label">Origin</label><input name="origin" class="form-control" required maxlength="100"></div>
+        <div class="col-md-6"><label class="form-label">Destination</label><input name="destination" class="form-control" required maxlength="100"></div>
+        <div class="col-md-6"><label class="form-label">Distance (km)</label><input name="distance" type="number" step="0.01" min="0.01" max="999" class="form-control"></div>
+    </div></div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Save</button></div>
+</form></div></div>
+
+<div class="modal fade" id="scheduleModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_schedule') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="modal-header"><h5 class="modal-title">Add schedule</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body"><div class="row g-3">
+        <div class="col-md-6"><label class="form-label">Route</label><select name="route_id" class="form-select" required>
+            {% for r in route_list %}<option value="{{ r.RouteID }}">{{ r.RouteName }}</option>{% endfor %}</select></div>
+        <div class="col-md-6"><label class="form-label">Vehicle (active)</label><select name="vehicle_id" class="form-select" required>
+            {% for v in vehicles %}<option value="{{ v.VehicleID }}">{{ v.VehicleNo }} ({{ v.Type }})</option>{% endfor %}</select></div>
+        <div class="col-md-4"><label class="form-label">Departure</label><input name="departure" type="time" class="form-control" required></div>
+        <div class="col-md-4"><label class="form-label">Arrival</label><input name="arrival" type="time" class="form-control" required></div>
+        <div class="col-md-4"><label class="form-label">Every (min)</label><input name="frequency" type="number" min="1" class="form-control"></div>
+    </div></div>
+    <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Save</button></div>
+</form></div></div>
+{% endif %}
+
+{% endblock %}
