@@ -64,7 +64,7 @@
     <div class="row g-3">
         <div class="col-md-6"><label class="form-label">Vehicle number</label><input name="vehicle_no" class="form-control" required maxlength="20"></div>
         <div class="col-md-6"><label class="form-label">Type</label>
-            <select name="type" class="form-select"><option>Bus</option><option>Metro</option><option>Tram</option></select></div>
+            <select name="type" class="form-select">{% for t in types %}<option>{{ t.RouteType }}</option>{% endfor %}</select></div>
         <div class="col-md-6"><label class="form-label">Capacity</label><input name="capacity" type="number" min="1" class="form-control" required></div>
         <div class="col-md-6"><label class="form-label">Model</label><input name="model" class="form-control" maxlength="50"></div>
         <div class="col-md-6"><label class="form-label">Status</label>

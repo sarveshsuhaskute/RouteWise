@@ -53,12 +53,49 @@
     {{ pager(pg, 'routes', q) }}
 </div>
 
+<div class="card mt-3">
+    <div class="card-header"><span><i class="bi bi-cash-coin me-2"></i>Fare rules <span class="text-muted fw-normal small">· the CalcFare function reads these two tables</span></span></div>
+    <div class="card-body"><div class="row g-4">
+        <div class="col-lg-6">
+            <h6 class="text-muted text-uppercase small">Rate per route type</h6>
+            <table class="table table-sm align-middle mb-0"><thead><tr><th>Type</th><th>₹ per km</th><th>Minimum fare</th><th></th></tr></thead><tbody>
+            {% for f in fare_rules %}
+                <tr><td class="fw-semibold">{{ f.RouteType }}</td>
+                {% if role == 'admin' %}
+                    <td><input form="fr_{{ f.RouteType }}" name="rate" type="number" step="0.01" min="0.01" value="{{ f.RatePerKm }}" class="form-control form-control-sm" style="max-width:100px"></td>
+                    <td><input form="fr_{{ f.RouteType }}" name="min_fare" type="number" step="0.01" min="0.01" value="{{ f.MinFare }}" class="form-control form-control-sm" style="max-width:100px"></td>
+                    <td class="text-end"><form id="fr_{{ f.RouteType }}" method="POST" action="{{ url_for('update_fare_rule') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="kind" value="route"><input type="hidden" name="key" value="{{ f.RouteType }}"><button class="btn btn-sm btn-outline-secondary">Save</button></form></td>
+                {% else %}
+                    <td>{{ f.RatePerKm | money }}</td><td>{{ f.MinFare | money }}</td><td></td>
+                {% endif %}
+                </tr>
+            {% endfor %}
+            </tbody></table>
+        </div>
+        <div class="col-lg-6">
+            <h6 class="text-muted text-uppercase small">Travel-card discount</h6>
+            <table class="table table-sm align-middle mb-0"><thead><tr><th>Card</th><th>Discount %</th><th></th></tr></thead><tbody>
+            {% for d in discounts %}
+                <tr><td class="fw-semibold">{{ d.CardType }}</td>
+                {% if role == 'admin' %}
+                    <td><input form="cd_{{ d.CardType }}" name="pct" type="number" min="0" max="90" value="{{ d.DiscountPct }}" class="form-control form-control-sm" style="max-width:100px"></td>
+                    <td class="text-end"><form id="cd_{{ d.CardType }}" method="POST" action="{{ url_for('update_fare_rule') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="kind" value="card"><input type="hidden" name="key" value="{{ d.CardType }}"><button class="btn btn-sm btn-outline-secondary">Save</button></form></td>
+                {% else %}
+                    <td>{{ d.DiscountPct }} %</td><td></td>
+                {% endif %}
+                </tr>
+            {% endfor %}
+            </tbody></table>
+        </div>
+    </div></div>
+</div>
+
 {% if role == 'admin' %}
 <div class="modal fade" id="routeModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_route') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="modal-header"><h5 class="modal-title">Add route</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body"><div class="row g-3">
         <div class="col-md-8"><label class="form-label">Route name</label><input name="route_name" class="form-control" required maxlength="100"></div>
-        <div class="col-md-4"><label class="form-label">Type</label><select name="type" class="form-select"><option>Bus</option><option>Metro</option></select></div>
+        <div class="col-md-4"><label class="form-label">Type</label><select name="type" class="form-select">{% for t in types %}<option>{{ t.RouteType }}</option>{% endfor %}</select></div>
         <div class="col-md-6"><label class="form-label">Origin</label><input name="origin" class="form-control" required maxlength="100"></div>
         <div class="col-md-6"><label class="form-label">Destination</label><input name="destination" class="form-control" required maxlength="100"></div>
         <div class="col-md-6"><label class="form-label">Distance (km)</label><input name="distance" type="number" step="0.01" min="0.01" max="999" class="form-control"></div>

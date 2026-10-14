@@ -17,27 +17,30 @@
                     {% for p in passengers %}<option value="{{ p.PassengerID }}">{{ p.Name }} ({{ p.CardType }})</option>{% endfor %}
                 </select>
             </div>
-            <div class="col-md-4">
-                <label class="form-label">Schedule</label>
+            <div class="col-md-3">
+                <label class="form-label">Departure</label>
                 <select name="s_id" class="form-select" required>
                     <option value="" disabled selected>Select departure…</option>
                     {% for s in schedules %}
-                    <option value="{{ s.ScheduleID }}" {{ 'disabled' if s.Left_ <= 0 }}>
-                        #{{ s.ScheduleID }} · {{ s.RouteName }} · {{ s.DepartureTime | fmt }} · {{ s.VehicleNo }} ({{ s.Left_ }} seats left)
-                    </option>
+                    <option value="{{ s.ScheduleID }}">#{{ s.ScheduleID }} · {{ s.RouteName }} · {{ s.DepartureTime | fmt }} · {{ s.VehicleNo }}</option>
                     {% endfor %}
                 </select>
             </div>
             <div class="col-md-2">
+                <label class="form-label">Travel date</label>
+                <input type="date" name="travel_date" id="travel_date" class="form-control" value="{{ today }}" min="{{ today }}" max="{{ last_day }}" required>
+            </div>
+            <div class="col-md-2">
                 <label class="form-label">Seat No</label>
-                <input type="text" name="seat" class="form-control" placeholder="e.g. A5" maxlength="10" required>
+                <input type="text" name="seat" class="form-control" placeholder="e.g. A5" maxlength="6" pattern="[A-Za-z0-9]{1,6}" title="1 to 6 letters or digits" required>
             </div>
             <div class="col-md-2">
                 <label class="form-label">Fare (₹) <span class="fw-normal">· auto</span></label>
                 <input type="number" name="fare" id="fare" class="form-control" placeholder="auto-calculated" min="0.01" step="0.01">
             </div>
-            <div class="col-md-1 d-flex align-items-end">
-                <button class="btn btn-brand w-100"><i class="bi bi-check2"></i></button>
+            <div class="col-12 d-flex justify-content-between align-items-center">
+                <span id="seatsHint" class="small text-muted">Choose a departure and a date to see the free seats.</span>
+                <button class="btn btn-brand"><i class="bi bi-check2 me-1"></i>Book ticket</button>
             </div>
         </form>
     </div>
@@ -48,12 +51,12 @@
         <span class="d-flex gap-2">{{ searchbox('bookings', q, 'Search passenger, route, vehicle, seat, ticket no.') }}
             <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('export_bookings') }}"><i class="bi bi-download me-1"></i>CSV</a></span></div>
     <div class="table-wrap"><table class="table table-hover align-middle" id="bookingTable">
-        <thead><tr><th>Ticket</th><th>Passenger</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Seat</th><th>Fare</th><th>Booked on</th><th></th></tr></thead>
+        <thead><tr><th>Ticket</th><th>Passenger</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Travels</th><th>Seat</th><th>Fare</th><th>Booked on</th><th></th></tr></thead>
         <tbody>
         {% for b in bookings %}
             <tr>
                 <td>#{{ b.TicketID }}</td><td class="fw-semibold">{{ b.PassengerName }}</td><td>{{ b.RouteName }}</td><td>{{ b.VehicleNo }}</td>
-                <td>{{ b.DepartureTime | fmt }}</td><td><span class="pill pill-blue">{{ b.SeatNo }}</span></td>
+                <td>{{ b.DepartureTime | fmt }}</td><td>{{ b.TravelDate | fmt }}</td><td><span class="pill pill-blue">{{ b.SeatNo }}</span></td>
                 <td>{{ b.Fare | money }}</td><td class="text-muted small">{{ b.BookingDate | fmt }}</td>
                 <td class="text-end text-nowrap">
                     {% if role in ('staff', 'admin') %}
@@ -66,7 +69,7 @@
                 </td>
             </tr>
         {% else %}
-            <tr><td colspan="9" class="text-center text-muted py-4">{{ 'No bookings match your search.' if q else 'No bookings yet.' }}</td></tr>
+            <tr><td colspan="10" class="text-center text-muted py-4">{{ 'No bookings match your search.' if q else 'No bookings yet.' }}</td></tr>
         {% endfor %}
         </tbody>
     </table></div>
@@ -80,9 +83,10 @@
         <p class="small text-muted mb-0">One all-or-nothing transaction (<code>TransferTicket</code>): if the new seat is taken or the vehicle is full, the original ticket stays exactly as it was. The fare is recalculated for the new departure.</p>
         <div class="col-12"><label class="form-label">New departure</label>
             <select name="s_id" class="form-select" required>
-                {% for s in schedules %}<option value="{{ s.ScheduleID }}" {{ 'disabled' if s.Left_ <= 0 }}>#{{ s.ScheduleID }} · {{ s.RouteName }} · {{ s.DepartureTime | fmt }} ({{ s.Left_ }} seats left)</option>{% endfor %}
+                {% for s in schedules %}<option value="{{ s.ScheduleID }}">#{{ s.ScheduleID }} · {{ s.RouteName }} · {{ s.DepartureTime | fmt }} · {{ s.VehicleNo }}</option>{% endfor %}
             </select></div>
-        <div class="col-12"><label class="form-label">New seat</label><input name="seat" class="form-control" maxlength="10" required placeholder="e.g. B7"></div>
+        <div class="col-md-6"><label class="form-label">New seat</label><input name="seat" class="form-control" maxlength="6" pattern="[A-Za-z0-9]{1,6}" required placeholder="e.g. B7"></div>
+        <div class="col-md-6"><label class="form-label">Travel date <span class="fw-normal">(empty = keep)</span></label><input type="date" name="travel_date" class="form-control" min="{{ today }}" max="{{ last_day }}"></div>
     </div></div>
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Transfer</button></div>
 </form></div></div>
@@ -91,13 +95,19 @@
 
 {% block scripts %}
 <script>
-    // Show the calculated fare (CalcFare in MySQL) as soon as passenger + schedule are chosen
-    var p = document.querySelector('[name=p_id]'), s = document.querySelector('[name=s_id]'), fare = document.getElementById('fare');
+    // Show the calculated fare (CalcFare) and the free seats of the chosen trip as soon as passenger, departure and date are known
+    var p = document.querySelector('[name=p_id]'), s = document.querySelector('[name=s_id]'), d = document.getElementById('travel_date');
+    var fare = document.getElementById('fare'), hint = document.getElementById('seatsHint');
     function suggestFare() {
         if (!p || !p.value || !s.value) return;
         fetch('{{ url_for("api_fare") }}?p=' + p.value + '&s=' + s.value).then(function (r) { return r.json(); })
-            .then(function (d) { if (d.fare !== null) { fare.value = d.fare; } });
+            .then(function (x) { if (x.fare !== null) { fare.value = x.fare; } });
     }
-    if (p) { p.addEventListener('change', suggestFare); s.addEventListener('change', suggestFare); }
+    function showSeats() {
+        if (!s || !s.value || !d.value) return;
+        fetch('{{ url_for("api_seats") }}?s=' + s.value + '&d=' + d.value).then(function (r) { return r.json(); })
+            .then(function (x) { if (x.left !== null) { hint.textContent = x.left + ' of ' + x.capacity + ' seats free on ' + d.value; hint.className = 'small ' + (x.left > 0 ? 'text-success' : 'text-danger'); } });
+    }
+    if (p) { p.addEventListener('change', suggestFare); s.addEventListener('change', function () { suggestFare(); showSeats(); }); d.addEventListener('change', showSeats); }
 </script>
 {% endblock %}
