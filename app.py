@@ -10,9 +10,22 @@ from decimal import Decimal
 
 import mysql.connector
 from flask import (Flask, render_template, request, redirect, url_for, flash,
-                   session, abort, jsonify, Response)
+                   session, abort, jsonify, Response, has_request_context)
 from werkzeug.security import generate_password_hash, check_password_hash
 
+def _load_env_file():
+    """Read KEY=VALUE lines from a .env file next to this script (git-ignored), without overriding the real environment."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if not os.path.exists(path):
+        return
+    for line in open(path):
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+
+
+_load_env_file()
 app = Flask(__name__)
 # Set SECRET_KEY to keep logins valid across restarts; otherwise a random key is generated per run.
 app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
@@ -29,9 +42,20 @@ db_config = {
 
 
 # --- 2. Small database helpers ---------------------------------------------
+def connect():
+    """Open a connection and tell MySQL which application user is acting (the audit triggers record it as the Actor)."""
+    conn = mysql.connector.connect(**db_config)
+    user = session.get('user') if has_request_context() else None
+    if user:
+        cur = conn.cursor()
+        cur.execute('SET @actor = %s', (user['username'],))
+        cur.close()
+    return conn
+
+
 def query(sql, args=()):
     """Run a SELECT and return all rows as dicts."""
-    conn = mysql.connector.connect(**db_config)
+    conn = connect()
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(sql, args)
@@ -44,7 +68,7 @@ def query(sql, args=()):
 
 def execute(sql, args=()):
     """Run an INSERT/UPDATE/DELETE and commit."""
-    conn = mysql.connector.connect(**db_config)
+    conn = connect()
     try:
         cur = conn.cursor()
         cur.execute(sql, args)
@@ -57,7 +81,7 @@ def execute(sql, args=()):
 def call(proc, args, retries=3):
     """Call a stored procedure and commit. Retries when MySQL reports a deadlock (1213) or lock timeout (1205)."""
     for attempt in range(retries):
-        conn = mysql.connector.connect(**db_config)
+        conn = connect()
         try:
             cur = conn.cursor()
             cur.callproc(proc, args)
@@ -75,7 +99,7 @@ def call(proc, args, retries=3):
 
 def query_proc(proc, args=()):
     """Call a stored procedure that returns a result set (for example RouteScorecard) and return its rows."""
-    conn = mysql.connector.connect(**db_config)
+    conn = connect()
     try:
         cur = conn.cursor(dictionary=True)
         cur.callproc(proc, args)
@@ -153,7 +177,7 @@ def opt(name):
 # viewer: read-only | staff: bookings, passengers, feedback | admin: everything (fleet, routes, users)
 ROLES = {'viewer': 0, 'staff': 1, 'admin': 2}
 STAFF_ENDPOINTS = {'book_ticket', 'cancel_ticket', 'transfer_ticket', 'add_passenger', 'edit_passenger', 'add_feedback'}
-ANY_USER_POSTS = {'logout'}      # POSTs every signed-in user may make, whatever the role
+ANY_USER_POSTS = {'logout', 'change_password'}      # POSTs every signed-in user may make, whatever the role
 ADMIN_PAGES = {'users'}
 PUBLIC_ENDPOINTS = {'login', 'static'}
 DEFAULT_USERS = [  # demo accounts created on first start when the AppUser table is empty
@@ -161,6 +185,22 @@ DEFAULT_USERS = [  # demo accounts created on first start when the AppUser table
     ('staff', 'Booking Clerk', 'staff123', 'staff'),
     ('viewer', 'Guest Viewer', 'viewer123', 'viewer'),
 ]
+
+
+LOGIN_MAX_FAILURES = 5          # failed sign-ins allowed ...
+LOGIN_LOCK_SECONDS = 600         # ... within this window before the account/address pair is locked out
+_failed_logins = {}              # (username, address) -> timestamps of recent failures (kept in memory)
+
+
+def login_wait_seconds():
+    """Seconds the current username/address pair must still wait, or 0 when sign-in is allowed."""
+    now = _time.time()
+    key = (val('username').lower(), request.remote_addr)
+    if len(_failed_logins) > 5000:
+        _failed_logins.clear()
+    recent = [t for t in _failed_logins.get(key, []) if now - t < LOGIN_LOCK_SECONDS]
+    _failed_logins[key] = recent
+    return int(LOGIN_LOCK_SECONDS - (now - recent[0])) + 1 if len(recent) >= LOGIN_MAX_FAILURES else 0
 
 
 def ensure_default_users():
@@ -219,8 +259,13 @@ def login():
     if request.method == 'GET' and session.get('user'):
         return redirect(url_for('index'))
     if request.method == 'POST':
+        wait = login_wait_seconds()
+        if wait:
+            flash(f'Too many failed sign-in attempts. Try again in {(wait + 59) // 60} minute(s).', 'danger')
+            return render_template('login.html'), 429
         rows = query("SELECT * FROM AppUser WHERE Username = %s", (val('username').lower(),))
         if rows and check_password_hash(rows[0]['PasswordHash'], request.form.get('password', '')):
+            _failed_logins.pop((val('username').lower(), request.remote_addr), None)
             token = csrf_token()
             session.clear()
             session['csrf'] = token
@@ -228,6 +273,7 @@ def login():
                                'username': rows[0]['Username'], 'role': rows[0]['Role']}
             nxt = request.args.get('next', '')
             return redirect(nxt if nxt.startswith('/') and not nxt.startswith('//') else url_for('index'))
+        _failed_logins.setdefault((val('username').lower(), request.remote_addr), []).append(_time.time())
         flash('Invalid username or password.', 'danger')
     return render_template('login.html')
 
@@ -238,6 +284,29 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/account')
+def account():
+    return render_template('account.html')
+
+
+@app.route('/account/password', methods=['POST'])
+def change_password():
+    current, new, confirm = (request.form.get(k, '') for k in ('current', 'new', 'confirm'))
+    rows = query('SELECT PasswordHash FROM AppUser WHERE UserID = %s', (session['user']['id'],))
+    if not rows or not check_password_hash(rows[0]['PasswordHash'], current):
+        flash('Your current password is not correct.', 'danger')
+    elif len(new) < 8:
+        flash('The new password must be at least 8 characters long.', 'danger')
+    elif new != confirm:
+        flash('The new password and its confirmation do not match.', 'danger')
+    elif new == current:
+        flash('Choose a password different from the current one.', 'danger')
+    else:
+        execute('UPDATE AppUser SET PasswordHash = %s WHERE UserID = %s', (generate_password_hash(new), session['user']['id']))
+        flash('Password changed.', 'success')
+    return redirect(url_for('account'))
+
+
 @app.route('/users')
 def users():
     return render_template('users.html', users=query("SELECT * FROM AppUser ORDER BY UserID"))
@@ -245,8 +314,8 @@ def users():
 
 @app.route('/users/add', methods=['POST'])
 def add_user():
-    if len(request.form.get('password', '')) < 6 or not val('username') or val('role') not in ROLES:
-        flash('Username, a valid role and a password of at least 6 characters are required.', 'danger')
+    if len(request.form.get('password', '')) < 8 or not val('username') or val('role') not in ROLES:
+        flash('Username, a valid role and a password of at least 8 characters are required.', 'danger')
         return redirect(url_for('users'))
     return run(lambda: execute(
         "INSERT INTO AppUser (Username, FullName, PasswordHash, Role) VALUES (%s,%s,%s,%s)",
@@ -275,6 +344,8 @@ def fmt(v):
         return v.strftime('%H:%M')
     if isinstance(v, datetime):
         return v.strftime('%d %b %Y, %H:%M')
+    if isinstance(v, date):
+        return v.strftime('%d %b %Y')
     if isinstance(v, Decimal):
         return f'{v:,.2f}' if v.as_tuple().exponent < 0 else f'{v:,}'
     return v
@@ -335,8 +406,8 @@ def index():
                (SELECT ROUND(AVG(Rating), 1) FROM Feedback)               AS rating
     """)[0]
     revenue = query("SELECT RouteName, Revenue, TicketsSold FROM RouteRevenue ORDER BY Revenue DESC LIMIT 8")
-    occupancy = query("""SELECT ScheduleID, RouteName, DepartureTime, OccupancyPct, SeatsLeft
-                         FROM ScheduleOccupancy ORDER BY OccupancyPct DESC LIMIT 6""")
+    occupancy = query("""SELECT ScheduleID, RouteName, DepartureTime, TravelDate, OccupancyPct, SeatsLeft
+                         FROM TripOccupancy ORDER BY OccupancyPct DESC, TravelDate DESC LIMIT 6""")
     recent = query("SELECT * FROM BookingSummary ORDER BY TicketID DESC LIMIT 6")
     return render_template(
         'dashboard.html', stats=stats, recent=recent, occupancy=occupancy,
@@ -362,15 +433,30 @@ def bookings():
     return render_template(
         'bookings.html', bookings=rows, pg=pg, q=q,
         passengers=query("SELECT PassengerID, Name, CardType FROM Passenger ORDER BY Name"),
-        schedules=query("""SELECT *, SeatsLeft(ScheduleID) AS Left_ FROM ScheduleOccupancy
-                           WHERE VehicleStatus = 'Active' ORDER BY ScheduleID"""))
+        schedules=query("""SELECT * FROM ScheduleOccupancy WHERE VehicleStatus = 'Active' ORDER BY ScheduleID"""),
+        today=date.today().isoformat(), last_day=(date.today() + timedelta(days=30)).isoformat())
+
+
+def travel_date_arg(name='travel_date'):
+    """The travel date from the form as an ISO string, None when empty, or False when it is not a valid date."""
+    raw = val(name)
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        return False
 
 
 @app.route('/book', methods=['POST'])
 def book_ticket():
     p_id, s_id, seat, fare = val('p_id'), val('s_id'), val('seat'), val('fare')
+    travel = travel_date_arg()
     if not (p_id.isdigit() and s_id.isdigit() and seat):
         flash('Passenger, schedule and seat number are required.', 'danger')
+        return redirect(url_for('bookings'))
+    if travel is False:
+        flash('The travel date is not a valid date.', 'danger')
         return redirect(url_for('bookings'))
     if fare:
         try:
@@ -380,20 +466,39 @@ def book_ticket():
         except ValueError:
             flash('Fare must be a number between 0.01 and 9999.99 (or leave it blank to calculate it automatically).', 'danger')
             return redirect(url_for('bookings'))
-    # BookTicket inserts a Ticket (blank fare -> CalcFare); triggers reject taken seats / full or idle vehicles
-    return run(lambda: call('BookTicket', [p_id, s_id, seat.upper(), fare or None]),
-               f'Ticket booked: seat {seat.upper()} on schedule #{s_id}.', 'bookings')
+    # BookTicket inserts a Ticket (blank fare -> CalcFare, blank date -> today); triggers reject taken seats / full or idle vehicles
+    return run(lambda: call('BookTicket', [p_id, s_id, seat.upper(), fare or None, travel]),
+               f'Ticket booked: seat {seat.upper()} on schedule #{s_id}' + (f', {travel}.' if travel else '.'), 'bookings')
 
 
 @app.route('/transfer/<int:ticket_id>', methods=['POST'])
 def transfer_ticket(ticket_id):
     s_id, seat = val('s_id'), val('seat')
+    travel = travel_date_arg()
     if not (s_id.isdigit() and seat):
         flash('Choose the new departure and enter the new seat number.', 'danger')
         return redirect(url_for('bookings'))
+    if travel is False:
+        flash('The travel date is not a valid date.', 'danger')
+        return redirect(url_for('bookings'))
     # TransferTicket is one all-or-nothing transaction: on any failure the original ticket is untouched
-    return run(lambda: call('TransferTicket', [ticket_id, s_id, seat.upper()]),
+    return run(lambda: call('TransferTicket', [ticket_id, s_id, seat.upper(), travel]),
                f'Ticket #{ticket_id} moved to schedule #{s_id}, seat {seat.upper()}.', 'bookings')
+
+
+@app.route('/api/seats')
+def api_seats():
+    s, d = request.args.get('s', ''), request.args.get('d', '')
+    try:
+        day = date.fromisoformat(d)
+    except ValueError:
+        return jsonify(left=None)
+    if not s.isdigit():
+        return jsonify(left=None)
+    row = query("""SELECT SeatsLeft(%s, %s) AS left_,
+                          (SELECT V.Capacity FROM Schedule S JOIN Vehicle V ON V.VehicleID = S.VehicleID WHERE S.ScheduleID = %s) AS capacity""",
+                (s, day, s))[0]
+    return jsonify(left=row['left_'], capacity=row['capacity'])
 
 
 @app.route('/api/fare')
@@ -416,10 +521,10 @@ def export_bookings():
     rows = query("SELECT * FROM BookingSummary ORDER BY TicketID")
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(['TicketID', 'Passenger', 'Route', 'Vehicle', 'Departure', 'Seat', 'Fare', 'BookedOn'])
+    writer.writerow(['TicketID', 'Passenger', 'Route', 'Vehicle', 'Departure', 'TravelDate', 'Seat', 'Fare', 'BookedOn'])
     for r in rows:
         writer.writerow([csv_safe(x) for x in (r['TicketID'], r['PassengerName'], r['RouteName'], r['VehicleNo'],
-                                               fmt(r['DepartureTime']), r['SeatNo'], r['Fare'], r['BookingDate'])])
+                                               fmt(r['DepartureTime']), r['TravelDate'], r['SeatNo'], r['Fare'], r['BookingDate'])])
     return Response(buf.getvalue(), mimetype='text/csv',
                     headers={'Content-Disposition': 'attachment; filename=bookings.csv'})
 
@@ -504,7 +609,7 @@ def fleet():
                         LEFT JOIN Driver D ON V.DriverID = D.DriverID ORDER BY V.VehicleID""")
     drivers = query("""SELECT D.*, V.VehicleNo FROM Driver D
                        LEFT JOIN Vehicle V ON V.DriverID = D.DriverID ORDER BY D.DriverID""")
-    return render_template('fleet.html', vehicles=vehicles, drivers=drivers)
+    return render_template('fleet.html', vehicles=vehicles, drivers=drivers, types=query('SELECT RouteType FROM FareRule ORDER BY RouteType'))
 
 
 def vehicle_args():
@@ -562,6 +667,9 @@ def routes():
         routes=query("SELECT * FROM RouteRevenue R JOIN Route USING (RouteID) ORDER BY RouteID"),
         schedules=query(f'SELECT * FROM ScheduleOccupancy {where} ORDER BY ScheduleID LIMIT %s OFFSET %s', args + [pg['per_page'], pg['offset']]),
         vehicles=query("SELECT VehicleID, VehicleNo, Type FROM ActiveVehicle ORDER BY VehicleNo"),
+        types=query("SELECT RouteType FROM FareRule ORDER BY RouteType"),
+        fare_rules=query("SELECT * FROM FareRule ORDER BY RouteType"),
+        discounts=query("SELECT * FROM CardDiscount ORDER BY DiscountPct"),
         route_list=query("SELECT RouteID, RouteName FROM Route ORDER BY RouteName"))
 
 
@@ -571,6 +679,29 @@ def add_route():
         "INSERT INTO Route (RouteName, Origin, Destination, Distance, Type) VALUES (%s,%s,%s,%s,%s)",
         [val('route_name'), val('origin'), val('destination'), opt('distance'), val('type') or 'Bus']),
         'Route added.', 'routes')
+
+
+@app.route('/fares/update', methods=['POST'])
+def update_fare_rule():
+    """Admin: change a fare rate / minimum fare / card discount. CalcFare reads these tables, so prices change at once."""
+    kind, key = val('kind'), val('key')
+    try:
+        if kind == 'route':
+            rate, minimum = float(val('rate')), float(val('min_fare'))
+            if not (math.isfinite(rate) and math.isfinite(minimum)) or rate <= 0 or minimum <= 0 or rate > 999 or minimum > 999:
+                raise ValueError
+            return run(lambda: execute('UPDATE FareRule SET RatePerKm = %s, MinFare = %s WHERE RouteType = %s', (rate, minimum, key)),
+                       f'Fare rule for {key} updated.', 'routes')
+        if kind == 'card':
+            pct = int(val('pct'))
+            if not 0 <= pct <= 90:
+                raise ValueError
+            return run(lambda: execute('UPDATE CardDiscount SET DiscountPct = %s WHERE CardType = %s', (pct, key)),
+                       f'Discount for {key} cards updated.', 'routes')
+    except ValueError:
+        pass
+    flash('Enter valid numbers (rates above 0, discounts from 0 to 90 %).', 'danger')
+    return redirect(url_for('routes'))
 
 
 @app.route('/routes/<int:rid>/delete', methods=['POST'])
@@ -633,11 +764,11 @@ REPORTS = [
              "HAVING COUNT(*) >= 2\n"
              "ORDER BY TotalSpent DESC\n"
              "LIMIT 10;")},
-    {'title': 'Busier than average schedules',
-     'desc': 'Subquery: schedules whose booked seats exceed the average across all schedules.',
-     'sql': ("SELECT ScheduleID, RouteName, VehicleNo, Booked, OccupancyPct\n"
-             "FROM ScheduleOccupancy\n"
-             "WHERE Booked > (SELECT AVG(Booked) FROM ScheduleOccupancy)\n"
+    {'title': 'Busier than average trips',
+     'desc': 'Subquery: trips (a schedule on a travel date) whose booked seats exceed the average over all trips.',
+     'sql': ("SELECT ScheduleID, RouteName, VehicleNo, TravelDate, Booked, OccupancyPct\n"
+             "FROM TripOccupancy\n"
+             "WHERE Booked > (SELECT AVG(Booked) FROM TripOccupancy)\n"
              "ORDER BY Booked DESC\n"
              "LIMIT 10;")},
     {'title': 'Average rating per route',
@@ -704,13 +835,30 @@ REPORTS = [
 ]
 
 
-@app.route('/reports')
-def reports():
+REPORT_CACHE_SECONDS = int(os.environ.get('REPORT_CACHE_SECONDS', '30'))   # 0 switches the cache off
+_report_cache = {'at': 0.0, 'db': None, 'results': None}
+
+
+def run_reports(force=False):
+    """Run all reports, or reuse the results of the last run when they are younger than REPORT_CACHE_SECONDS."""
+    now = _time.time()
+    fresh = (_report_cache['results'] is not None and _report_cache['db'] == db_config['database']
+             and now - _report_cache['at'] < REPORT_CACHE_SECONDS)
+    if fresh and not force:
+        return _report_cache['results'], _report_cache['at']
     results = []
     for r in REPORTS:
         rows = query_proc(r['proc'])[:10] if r.get('proc') else query(r['sql'])
         results.append({**r, 'rows': rows, 'cols': list(rows[0].keys()) if rows else []})
-    return render_template('reports.html', reports=results)
+    _report_cache.update(at=now, db=db_config['database'], results=results)
+    return results, now
+
+
+@app.route('/reports')
+def reports():
+    results, generated = run_reports(force=request.args.get('refresh') == '1' or REPORT_CACHE_SECONDS <= 0)
+    return render_template('reports.html', reports=results, generated=datetime.fromtimestamp(generated),
+                           cache_seconds=REPORT_CACHE_SECONDS)
 
 
 if __name__ == '__main__':

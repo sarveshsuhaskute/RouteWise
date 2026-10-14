@@ -38,12 +38,12 @@
     </div>
     <div class="col-lg-5">
         <div class="card h-100">
-            <div class="card-header"><i class="bi bi-speedometer me-2"></i>Busiest departures</div>
+            <div class="card-header"><i class="bi bi-speedometer me-2"></i>Busiest trips</div>
             <div class="card-body">
                 {% for o in occupancy[:6] %}
                 <div class="mb-3">
                     <div class="d-flex justify-content-between small">
-                        <span class="fw-semibold">{{ o.RouteName }} <span class="text-muted">· {{ o.DepartureTime | fmt }}</span></span>
+                        <span class="fw-semibold">{{ o.RouteName }} <span class="text-muted">· {{ o.DepartureTime | fmt }} · {{ o.TravelDate | fmt }}</span></span>
                         <span class="text-muted">{{ o.OccupancyPct }}% · {{ o.SeatsLeft }} left</span>
                     </div>
                     <div class="occ mt-1"><span style="width: {{ [o.OccupancyPct | float, 2] | max }}%"></span></div>

@@ -2,7 +2,8 @@
 {% block title %}Reports{% endblock %}
 {% block content %}
 <div class="page-head">
-    <div><h1>SQL Reports</h1><p>Each report shows the exact query behind it — joins, aggregates, HAVING, subqueries and views.</p></div>
+    <div><h1>SQL Reports</h1><p>Each report shows the exact query behind it — joins, aggregates, HAVING, subqueries, window functions and CTEs.</p></div>
+    <div class="text-end small text-muted">Calculated {{ generated.strftime('%H:%M:%S') }}{% if cache_seconds > 0 %} (kept for {{ cache_seconds }} s)<br><a href="{{ url_for('reports', refresh=1) }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh now</a>{% endif %}</div>
 </div>
 
 <div class="row g-3">

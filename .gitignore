@@ -5,3 +5,4 @@ __pycache__/
 *.pptx
 backups/
 .DS_Store
+.env

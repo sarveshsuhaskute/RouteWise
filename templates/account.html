@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block title %}My account{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>My account</h1><p>Signed in as <b>{{ current_user.username }}</b> ({{ role }}).</p></div></div>
+<div class="card" style="max-width: 520px;">
+    <div class="card-header"><i class="bi bi-key me-2"></i>Change password</div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('change_password') }}" class="row g-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-12"><label class="form-label">Current password</label><input name="current" type="password" class="form-control" autocomplete="current-password" required></div>
+            <div class="col-12"><label class="form-label">New password (at least 8 characters)</label><input name="new" type="password" class="form-control" minlength="8" autocomplete="new-password" required></div>
+            <div class="col-12"><label class="form-label">Repeat the new password</label><input name="confirm" type="password" class="form-control" minlength="8" autocomplete="new-password" required></div>
+            <div class="col-12"><button class="btn btn-brand">Change password</button></div>
+        </form>
+    </div>
+</div>
+{% endblock %}

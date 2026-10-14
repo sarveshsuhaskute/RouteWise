@@ -53,9 +53,10 @@ def main():
     cur.execute('CREATE TABLE TicketBench LIKE Ticket')
     cur.execute(f'SET SESSION cte_max_recursion_depth = {ROWS + 10}')
     t = time.perf_counter()
-    cur.execute(f"""INSERT INTO TicketBench (PassengerID, ScheduleID, SeatNo, Fare)
+    # 5,000 passengers, 10 departures, 30 travel dates; the seat label makes every (departure, date, seat) unique
+    cur.execute(f"""INSERT INTO TicketBench (PassengerID, ScheduleID, TravelDate, SeatNo, Fare)
         WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {ROWS})
-        SELECT 1 + (n * 7919) % 5000, 1 + n % 10, CONCAT('S', n), 10 + n % 90 FROM seq""")
+        SELECT 1 + (n * 7919) % 5000, 1 + n % 10, CURDATE() + INTERVAL (n % 30) DAY, CONCAT('S', n DIV 30), 10 + n % 90 FROM seq""")
     conn.commit()
     load_s = round(time.perf_counter() - t, 1)
     cur.execute('ANALYZE TABLE TicketBench'); cur.fetchall()
@@ -63,13 +64,14 @@ def main():
     print(f'Loaded {n:,} tickets in {load_s}s')
 
     q_passenger = 'SELECT COUNT(*) AS trips, SUM(Fare) AS spent FROM TicketBench WHERE PassengerID = 4242'
-    q_seat = "SELECT TicketID FROM TicketBench WHERE ScheduleID = 7 AND SeatNo = 'S150006'"
+    q_seat = ("SELECT TicketID FROM TicketBench WHERE ScheduleID = 7 AND TravelDate = CURDATE() + INTERVAL 6 DAY "
+              "AND SeatNo = 'S5000'")
     q_join = ('SELECT R.RouteName, COUNT(*) AS trips, SUM(T.Fare) AS spent FROM TicketBench T '
               'JOIN Schedule S ON S.ScheduleID = T.ScheduleID JOIN Route R ON R.RouteID = S.RouteID '
               'WHERE T.PassengerID = 4242 GROUP BY R.RouteName')
     experiments = [
         ('Passenger history: WHERE PassengerID = ?', q_passenger, 'idx_ticket_passenger'),
-        ('Seat lookup: WHERE ScheduleID = ? AND SeatNo = ?', q_seat, 'uq_schedule_seat'),
+        ('Seat lookup: WHERE ScheduleID = ? AND TravelDate = ? AND SeatNo = ?', q_seat, 'uq_trip_seat'),
         ('Passenger spend per route (3-table join)', q_join, 'idx_ticket_passenger'),
     ]
     results = []

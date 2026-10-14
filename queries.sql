@@ -1,4 +1,4 @@
--- Sample analytical queries (the same ones shown on the app's Reports page)
+-- Analytical queries (the same ones shown on the app's Reports page)
 USE public_transport;
 
 -- 1. Revenue by route
@@ -17,11 +17,11 @@ HAVING COUNT(*) >= 2
 ORDER BY TotalSpent DESC
 LIMIT 10;
 
--- 3. Busier than average schedules
--- Subquery: schedules whose booked seats exceed the average across all schedules.
-SELECT ScheduleID, RouteName, VehicleNo, Booked, OccupancyPct
-FROM ScheduleOccupancy
-WHERE Booked > (SELECT AVG(Booked) FROM ScheduleOccupancy)
+-- 3. Busier than average trips
+-- Subquery: trips (a schedule on a travel date) whose booked seats exceed the average over all trips.
+SELECT ScheduleID, RouteName, VehicleNo, TravelDate, Booked, OccupancyPct
+FROM TripOccupancy
+WHERE Booked > (SELECT AVG(Booked) FROM TripOccupancy)
 ORDER BY Booked DESC
 LIMIT 10;
 
@@ -100,11 +100,3 @@ SELECT A.AuditID, A.Action, A.TicketID, P.Name AS Passenger, A.SeatNo, A.Fare, A
 FROM TicketAudit A JOIN Passenger P ON P.PassengerID = A.PassengerID
 ORDER BY A.AuditID DESC
 LIMIT 10;
-
--- 13. Stored routines, transactions and the updatable view
-SELECT ScheduleID, RouteName, SeatsLeft(ScheduleID) AS SeatsLeft FROM Schedule JOIN Route USING (RouteID) LIMIT 10;
-SELECT CalcFare(1, 1) AS FareForPassenger1OnSchedule1;
--- CALL BookTicket(8, 1, 'F1', NULL);        -- books a seat; NULL fare = CalcFare; triggers validate it
--- CALL TransferTicket(1, 2, 'Z9');          -- moves a ticket as ONE transaction (rolls back on any error)
--- CALL CancelTicket(1);                     -- cancels a ticket (audit trigger logs it)
-SELECT VehicleNo, Status FROM ActiveVehicle LIMIT 10; -- view WITH CHECK OPTION: an UPDATE that sets Status to 'Retired' is rejected

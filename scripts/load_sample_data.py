@@ -4,7 +4,7 @@
     .venv/bin/python scripts/load_sample_data.py --scale 0.1  # a tenth of that
 
 What it adds (at --scale 1): 30 routes, 66 drivers, 66 vehicles, about 600 departures, 3,000 passengers,
-about 25,000 tickets spread over the last 45 days, and about 1,500 feedback entries.
+about 25,000 tickets (two travel dates per departure over the last 30 days), and about 1,500 feedback entries.
 
 Every row goes through the application's own database user (routewise_app), so it passes the same constraints and
 triggers as real use: no double seats, no overbooked vehicles, no overlapping runs, an audit row for every ticket.
@@ -140,26 +140,33 @@ def main():
         passengers.append(cur.lastrowid)
     conn.commit()
 
-    # ---- tickets: peak hours fuller, spread over the last 45 days; every row passes the triggers ----
+    # ---- tickets: every departure runs on two different days of the last month; peak hours are fuller.
+    #      A ticket is booked 0 to 3 days before it is used. Every row passes the constraints and triggers. ----
     now = datetime.now()
+    today = now.date()
     tickets = failed = 0
     for sid, rid, vid, dep, cap in schedules:
         hour = dep // 60
         peak = 0.85 if 7 <= hour <= 10 or 17 <= hour <= 20 else 0.55
-        fill = min(max(rng.gauss(peak, 0.15), 0.1), 0.98)
-        n = max(int(cap * fill), 1)
-        riders = rng.sample(passengers, min(n, len(passengers)))
-        seats = rng.sample(seat_labels(cap), len(riders))
-        rows = [(p, sid, seat, p, sid, now - timedelta(days=rng.random() * 45, minutes=rng.randint(0, 1440))) for p, seat in zip(riders, seats)]
-        try:
-            cur.executemany('INSERT INTO Ticket (PassengerID, ScheduleID, SeatNo, Fare, BookingDate) '
-                            'SELECT %s, %s, %s, CalcFare(%s, %s), %s', rows)
-            conn.commit()
-            tickets += len(rows)
-        except mysql.connector.Error as err:        # a rule rejected the batch: nothing half-written
-            conn.rollback()
-            failed += 1
-            print(f'  schedule {sid}: {err.msg}', file=sys.stderr)
+        for day_offset in rng.sample(range(0, 30), 2):                       # two travel dates for this departure
+            travel = today - timedelta(days=day_offset)
+            fill = min(max(rng.gauss(peak, 0.15), 0.1), 0.98) * 0.5
+            n = max(int(cap * fill), 1)
+            riders = rng.sample(passengers, min(n, len(passengers)))
+            seats = rng.sample(seat_labels(cap), len(riders))
+            rows = []
+            for p, seat in zip(riders, seats):
+                booked = datetime.combine(travel, datetime.min.time()) - timedelta(days=rng.randint(0, 3)) + timedelta(minutes=rng.randint(0, 1439))
+                rows.append((p, sid, travel, seat, p, sid, booked))
+            try:
+                cur.executemany('INSERT INTO Ticket (PassengerID, ScheduleID, TravelDate, SeatNo, Fare, BookingDate) '
+                                'SELECT %s, %s, %s, %s, CalcFare(%s, %s), %s', rows)
+                conn.commit()
+                tickets += len(rows)
+            except mysql.connector.Error as err:        # a rule rejected the batch: nothing half-written
+                conn.rollback()
+                failed += 1
+                print(f'  schedule {sid} on {travel}: {err.msg}', file=sys.stderr)
 
     # ---- feedback ---------------------------------------------------------------------------------
     n_fb = max(int(1500 * s), 20)
