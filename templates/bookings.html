@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Bookings{% endblock %}
 {% block content %}
+{% from '_pager.html' import pager, searchbox %}
 <div class="page-head">
     <div><h1>Bookings</h1><p>Book through the <code>BookTicket</code> procedure; triggers block taken seats and full vehicles.</p></div>
 </div>
@@ -11,7 +12,7 @@
         <form action="{{ url_for('book_ticket') }}" method="POST" class="row g-3"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="col-md-3">
                 <label class="form-label">Passenger</label>
-                <select name="p_id" class="form-select" required>
+                <select name="p_id" class="form-select" data-filterable required>
                     <option value="" disabled selected>Select passenger…</option>
                     {% for p in passengers %}<option value="{{ p.PassengerID }}">{{ p.Name }} ({{ p.CardType }})</option>{% endfor %}
                 </select>
@@ -43,8 +44,8 @@
 </div>
 
 <div class="card">
-    <div class="card-header"><span><i class="bi bi-list-ul me-2"></i>All bookings <span class="text-muted fw-normal">({{ bookings | length }})</span></span>
-        <span class="d-flex gap-2"><input type="search" class="form-control form-control-sm search" placeholder="Search bookings…" data-filter="bookingTable">
+    <div class="card-header"><span><i class="bi bi-list-ul me-2"></i>All bookings <span class="text-muted fw-normal">({{ '{:,}'.format(pg.total) }})</span></span>
+        <span class="d-flex gap-2">{{ searchbox('bookings', q, 'Search passenger, route, vehicle, seat, ticket no.') }}
             <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('export_bookings') }}"><i class="bi bi-download me-1"></i>CSV</a></span></div>
     <div class="table-wrap"><table class="table table-hover align-middle" id="bookingTable">
         <thead><tr><th>Ticket</th><th>Passenger</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Seat</th><th>Fare</th><th>Booked on</th><th></th></tr></thead>
@@ -65,10 +66,11 @@
                 </td>
             </tr>
         {% else %}
-            <tr><td colspan="9" class="text-center text-muted py-4">No bookings yet.</td></tr>
+            <tr><td colspan="9" class="text-center text-muted py-4">{{ 'No bookings match your search.' if q else 'No bookings yet.' }}</td></tr>
         {% endfor %}
         </tbody>
     </table></div>
+    {{ pager(pg, 'bookings', q) }}
 </div>
 
 {% if role in ('staff', 'admin') %}

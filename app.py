@@ -123,6 +123,26 @@ def val(name):
     return request.form.get(name, '').strip()
 
 
+def like(q):
+    return f'%{q}%'
+
+
+def page_info(total, per_page=50):
+    """Current page number, page count, row offset and a compact list of page numbers (None = gap) for the pager."""
+    raw = request.args.get('page', '1')
+    page = int(raw) if raw.isdigit() and int(raw) > 0 else 1
+    pages = max((total + per_page - 1) // per_page, 1)
+    page = min(page, pages)
+    numbers = sorted({1, pages, *range(max(page - 2, 1), min(page + 2, pages) + 1)})
+    window, prev = [], 0
+    for n in numbers:
+        if n - prev > 1:
+            window.append(None)
+        window.append(n)
+        prev = n
+    return {'page': page, 'pages': pages, 'total': total, 'per_page': per_page, 'offset': (page - 1) * per_page, 'window': window}
+
+
 def opt(name):
     """Optional form field: empty string -> NULL."""
     return val(name) or None
@@ -314,24 +334,33 @@ def index():
                (SELECT COUNT(*) FROM Vehicle)                             AS total_vehicles,
                (SELECT ROUND(AVG(Rating), 1) FROM Feedback)               AS rating
     """)[0]
-    revenue = query("SELECT RouteName, Revenue, TicketsSold FROM RouteRevenue ORDER BY Revenue DESC")
+    revenue = query("SELECT RouteName, Revenue, TicketsSold FROM RouteRevenue ORDER BY Revenue DESC LIMIT 8")
     occupancy = query("""SELECT ScheduleID, RouteName, DepartureTime, OccupancyPct, SeatsLeft
-                         FROM ScheduleOccupancy ORDER BY OccupancyPct DESC""")
+                         FROM ScheduleOccupancy ORDER BY OccupancyPct DESC LIMIT 6""")
     recent = query("SELECT * FROM BookingSummary ORDER BY TicketID DESC LIMIT 6")
     return render_template(
         'dashboard.html', stats=stats, recent=recent, occupancy=occupancy,
         chart_revenue={'labels': [r['RouteName'] for r in revenue],
                        'values': [float(r['Revenue']) for r in revenue]},
-        chart_occ={'labels': [f"#{o['ScheduleID']} {o['RouteName']} {fmt(o['DepartureTime'])}" for o in occupancy],
-                   'values': [float(o['OccupancyPct']) for o in occupancy]})
+)
 
 
 # --- 5. Bookings (stored procedures + triggers) -----------------------------
 @app.route('/bookings')
 def bookings():
+    q = request.args.get('q', '').strip()
+    where, args = '', []
+    if q:
+        where = 'WHERE PassengerName LIKE %s OR RouteName LIKE %s OR VehicleNo LIKE %s OR SeatNo LIKE %s'
+        args = [like(q)] * 4
+        if q.isdigit():
+            where += ' OR TicketID = %s'
+            args.append(int(q))
+    total = query(f'SELECT COUNT(*) AS n FROM BookingSummary {where}', args)[0]['n']
+    pg = page_info(total)
+    rows = query(f'SELECT * FROM BookingSummary {where} ORDER BY TicketID DESC LIMIT %s OFFSET %s', args + [pg['per_page'], pg['offset']])
     return render_template(
-        'bookings.html',
-        bookings=query("SELECT * FROM BookingSummary ORDER BY TicketID DESC"),
+        'bookings.html', bookings=rows, pg=pg, q=q,
         passengers=query("SELECT PassengerID, Name, CardType FROM Passenger ORDER BY Name"),
         schedules=query("""SELECT *, SeatsLeft(ScheduleID) AS Left_ FROM ScheduleOccupancy
                            WHERE VehicleStatus = 'Active' ORDER BY ScheduleID"""))
@@ -403,10 +432,21 @@ def cancel_ticket(ticket_id):
 # --- 6. Passengers (full CRUD) ----------------------------------------------
 @app.route('/passengers')
 def passengers():
-    rows = query("""SELECT P.*, COUNT(T.TicketID) AS Trips, COALESCE(SUM(T.Fare), 0) AS Spent
-                    FROM Passenger P LEFT JOIN Ticket T ON T.PassengerID = P.PassengerID
-                    GROUP BY P.PassengerID ORDER BY P.PassengerID""")
-    return render_template('passengers.html', passengers=rows)
+    q = request.args.get('q', '').strip()
+    where, args = '', []
+    if q:
+        where = 'WHERE P.Name LIKE %s OR P.Email LIKE %s OR P.Phone LIKE %s'
+        args = [like(q)] * 3
+        if q.isdigit():
+            where += ' OR P.PassengerID = %s'
+            args.append(int(q))
+    total = query(f'SELECT COUNT(*) AS n FROM Passenger P {where}', args)[0]['n']
+    pg = page_info(total)
+    rows = query(f"""SELECT P.*,
+                            (SELECT COUNT(*) FROM Ticket T WHERE T.PassengerID = P.PassengerID) AS Trips,
+                            (SELECT COALESCE(SUM(T.Fare), 0) FROM Ticket T WHERE T.PassengerID = P.PassengerID) AS Spent
+                     FROM Passenger P {where} ORDER BY P.PassengerID LIMIT %s OFFSET %s""", args + [pg['per_page'], pg['offset']])
+    return render_template('passengers.html', passengers=rows, pg=pg, q=q)
 
 
 def passenger_problem():
@@ -507,10 +547,20 @@ def delete_driver(did):
 # --- 8. Routes & schedules --------------------------------------------------
 @app.route('/routes')
 def routes():
+    q = request.args.get('q', '').strip()
+    where, args = '', []
+    if q:
+        where = 'WHERE RouteName LIKE %s OR VehicleNo LIKE %s'
+        args = [like(q)] * 2
+        if q.isdigit():
+            where += ' OR ScheduleID = %s'
+            args.append(int(q))
+    total = query(f'SELECT COUNT(*) AS n FROM ScheduleOccupancy {where}', args)[0]['n']
+    pg = page_info(total, 40)
     return render_template(
-        'routes.html',
+        'routes.html', pg=pg, q=q,
         routes=query("SELECT * FROM RouteRevenue R JOIN Route USING (RouteID) ORDER BY RouteID"),
-        schedules=query("SELECT * FROM ScheduleOccupancy ORDER BY ScheduleID"),
+        schedules=query(f'SELECT * FROM ScheduleOccupancy {where} ORDER BY ScheduleID LIMIT %s OFFSET %s', args + [pg['per_page'], pg['offset']]),
         vehicles=query("SELECT VehicleID, VehicleNo, Type FROM ActiveVehicle ORDER BY VehicleNo"),
         route_list=query("SELECT RouteID, RouteName FROM Route ORDER BY RouteName"))
 
@@ -544,15 +594,17 @@ def delete_schedule(sid):
 # --- 9. Feedback ------------------------------------------------------------
 @app.route('/feedback')
 def feedback():
+    total = query('SELECT COUNT(*) AS n FROM Feedback')[0]['n']
+    pg = page_info(total, 24)
     return render_template(
-        'feedback.html',
+        'feedback.html', pg=pg,
         feedbacks=query("""SELECT F.*, P.Name, R.RouteName FROM Feedback F
                            JOIN Passenger P ON F.PassengerID = P.PassengerID
                            LEFT JOIN Route R ON F.RouteID = R.RouteID
-                           ORDER BY F.FeedbackID DESC"""),
+                           ORDER BY F.FeedbackID DESC LIMIT %s OFFSET %s""", (pg['per_page'], pg['offset'])),
         passengers=query("SELECT PassengerID, Name FROM Passenger ORDER BY Name"),
         route_list=query("SELECT RouteID, RouteName FROM Route ORDER BY RouteName"),
-        ratings=query("SELECT * FROM RouteRatings ORDER BY AvgRating DESC"))
+        ratings=query("SELECT * FROM RouteRatings WHERE Reviews > 0 ORDER BY AvgRating DESC, Reviews DESC LIMIT 6"))
 
 
 @app.route('/feedback/add', methods=['POST'])
@@ -572,28 +624,31 @@ def delete_feedback(fid):
 REPORTS = [
     {'title': 'Revenue by route',
      'desc': 'Aggregation over a view: tickets sold and revenue per route (GROUP BY + SUM).',
-     'sql': "SELECT RouteName, Type, TicketsSold, Revenue\nFROM RouteRevenue\nORDER BY Revenue DESC;"},
+     'sql': "SELECT RouteName, Type, TicketsSold, Revenue\nFROM RouteRevenue\nORDER BY Revenue DESC\nLIMIT 10;"},
     {'title': 'Top passengers by spend',
      'desc': 'GROUP BY with HAVING: passengers with at least 2 trips, ranked by total fare.',
      'sql': ("SELECT P.Name, P.CardType, COUNT(*) AS Trips, SUM(T.Fare) AS TotalSpent\n"
              "FROM Passenger P JOIN Ticket T ON T.PassengerID = P.PassengerID\n"
              "GROUP BY P.PassengerID, P.Name, P.CardType\n"
              "HAVING COUNT(*) >= 2\n"
-             "ORDER BY TotalSpent DESC;")},
+             "ORDER BY TotalSpent DESC\n"
+             "LIMIT 10;")},
     {'title': 'Busier than average schedules',
      'desc': 'Subquery: schedules whose booked seats exceed the average across all schedules.',
      'sql': ("SELECT ScheduleID, RouteName, VehicleNo, Booked, OccupancyPct\n"
              "FROM ScheduleOccupancy\n"
              "WHERE Booked > (SELECT AVG(Booked) FROM ScheduleOccupancy)\n"
-             "ORDER BY Booked DESC;")},
+             "ORDER BY Booked DESC\n"
+             "LIMIT 10;")},
     {'title': 'Average rating per route',
      'desc': 'View over a LEFT JOIN of routes and feedback: average rating and number of reviews.',
-     'sql': "SELECT RouteName, Reviews, AvgRating\nFROM RouteRatings\nORDER BY AvgRating DESC;"},
+     'sql': "SELECT RouteName, Reviews, AvgRating\nFROM RouteRatings\nORDER BY AvgRating DESC\nLIMIT 10;"},
     {'title': 'Passengers who never booked',
      'desc': 'LEFT JOIN ... IS NULL (anti-join): registered passengers without any ticket.',
      'sql': ("SELECT P.PassengerID, P.Name, P.Email, P.CardType\n"
              "FROM Passenger P LEFT JOIN Ticket T ON T.PassengerID = P.PassengerID\n"
-             "WHERE T.TicketID IS NULL;")},
+             "WHERE T.TicketID IS NULL\n"
+             "LIMIT 10;")},
     {'title': 'Driver workload',
      'desc': 'Three-table LEFT JOIN: vehicle and number of scheduled runs per driver.',
      'sql': ("SELECT D.Name AS Driver, D.ShiftHours, V.VehicleNo, COUNT(S.ScheduleID) AS ScheduledRuns\n"
@@ -601,7 +656,8 @@ REPORTS = [
              "LEFT JOIN Vehicle  V ON V.DriverID  = D.DriverID\n"
              "LEFT JOIN Schedule S ON S.VehicleID = V.VehicleID\n"
              "GROUP BY D.DriverID, D.Name, D.ShiftHours, V.VehicleNo\n"
-             "ORDER BY ScheduledRuns DESC;")},
+             "ORDER BY ScheduledRuns DESC\n"
+             "LIMIT 10;")},
     {'title': 'Tickets by travel-card type',
      'desc': 'Which pass types generate the most tickets and revenue.',
      'sql': ("SELECT P.CardType, COUNT(T.TicketID) AS Tickets, COALESCE(SUM(T.Fare), 0) AS Revenue\n"
@@ -617,14 +673,18 @@ REPORTS = [
              "JOIN Route R    ON R.RouteID    = S.RouteID\n"
              "ORDER BY R.RouteName, T.TicketID\nLIMIT 12;")},
     {'title': 'Passenger rank within each travel-card type',
-     'desc': 'CTE plus RANK() OVER (PARTITION BY card type ORDER BY spend): the biggest spenders of each card type.',
+     'desc': 'CTE plus RANK() OVER (PARTITION BY card type ORDER BY spend): the top three spenders of each card type.',
      'sql': ("WITH spend AS (\n"
              "    SELECT P.PassengerID, P.Name, P.CardType, COALESCE(SUM(T.Fare), 0) AS TotalSpent\n"
              "    FROM Passenger P LEFT JOIN Ticket T ON T.PassengerID = P.PassengerID\n"
-             "    GROUP BY P.PassengerID, P.Name, P.CardType)\n"
-             "SELECT CardType, Name, TotalSpent,\n"
-             "       RANK() OVER (PARTITION BY CardType ORDER BY TotalSpent DESC) AS RankInCard\n"
-             "FROM spend\n"
+             "    GROUP BY P.PassengerID, P.Name, P.CardType),\n"
+             "ranked AS (\n"
+             "    SELECT CardType, Name, TotalSpent,\n"
+             "           RANK() OVER (PARTITION BY CardType ORDER BY TotalSpent DESC) AS RankInCard\n"
+             "    FROM spend)\n"
+             "SELECT CardType, Name, TotalSpent, RankInCard\n"
+             "FROM ranked\n"
+             "WHERE RankInCard <= 3\n"
              "ORDER BY CardType, RankInCard, Name;")},
     {'title': 'Departures per hour of the day',
      'desc': 'Recursive CTE generates the hours 05 to 20, and a LEFT JOIN counts departures, so empty hours appear as 0.',
@@ -648,7 +708,7 @@ REPORTS = [
 def reports():
     results = []
     for r in REPORTS:
-        rows = query_proc(r['proc']) if r.get('proc') else query(r['sql'])
+        rows = query_proc(r['proc'])[:10] if r.get('proc') else query(r['sql'])
         results.append({**r, 'rows': rows, 'cols': list(rows[0].keys()) if rows else []})
     return render_template('reports.html', reports=results)
 
