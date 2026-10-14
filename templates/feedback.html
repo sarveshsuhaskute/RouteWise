@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Feedback{% endblock %}
 {% block content %}
+{% from '_pager.html' import pager, searchbox %}
 <div class="page-head">
     <div><h1>Passenger Feedback</h1><p>Ratings are summarised per route through the <code>RouteRatings</code> view.</p></div>
     <button class="btn btn-brand w-staff" data-bs-toggle="modal" data-bs-target="#fbModal"><i class="bi bi-chat-heart me-1"></i>Add feedback</button>
@@ -37,11 +38,13 @@
     {% endfor %}
 </div>
 
+{% if pg.pages > 1 %}<div class="card mt-3">{{ pager(pg, 'feedback') }}</div>{% endif %}
+
 {% if role in ('staff', 'admin') %}
 <div class="modal fade" id="fbModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_feedback') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="modal-header"><h5 class="modal-title">Add feedback</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
     <div class="modal-body"><div class="row g-3">
-        <div class="col-md-6"><label class="form-label">Passenger</label><select name="passenger_id" class="form-select" required>
+        <div class="col-md-6"><label class="form-label">Passenger</label><select name="passenger_id" class="form-select" data-filterable required>
             {% for p in passengers %}<option value="{{ p.PassengerID }}">{{ p.Name }}</option>{% endfor %}</select></div>
         <div class="col-md-6"><label class="form-label">Route</label><select name="route_id" class="form-select">
             <option value="">General</option>{% for r in route_list %}<option value="{{ r.RouteID }}">{{ r.RouteName }}</option>{% endfor %}</select></div>

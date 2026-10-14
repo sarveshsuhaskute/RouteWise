@@ -5,7 +5,8 @@ USE public_transport;
 -- Aggregation over a view: tickets sold and revenue per route (GROUP BY + SUM).
 SELECT RouteName, Type, TicketsSold, Revenue
 FROM RouteRevenue
-ORDER BY Revenue DESC;
+ORDER BY Revenue DESC
+LIMIT 10;
 
 -- 2. Top passengers by spend
 -- GROUP BY with HAVING: passengers with at least 2 trips, ranked by total fare.
@@ -13,26 +14,30 @@ SELECT P.Name, P.CardType, COUNT(*) AS Trips, SUM(T.Fare) AS TotalSpent
 FROM Passenger P JOIN Ticket T ON T.PassengerID = P.PassengerID
 GROUP BY P.PassengerID, P.Name, P.CardType
 HAVING COUNT(*) >= 2
-ORDER BY TotalSpent DESC;
+ORDER BY TotalSpent DESC
+LIMIT 10;
 
 -- 3. Busier than average schedules
 -- Subquery: schedules whose booked seats exceed the average across all schedules.
 SELECT ScheduleID, RouteName, VehicleNo, Booked, OccupancyPct
 FROM ScheduleOccupancy
 WHERE Booked > (SELECT AVG(Booked) FROM ScheduleOccupancy)
-ORDER BY Booked DESC;
+ORDER BY Booked DESC
+LIMIT 10;
 
 -- 4. Average rating per route
 -- View over a LEFT JOIN of routes and feedback: average rating and number of reviews.
 SELECT RouteName, Reviews, AvgRating
 FROM RouteRatings
-ORDER BY AvgRating DESC;
+ORDER BY AvgRating DESC
+LIMIT 10;
 
 -- 5. Passengers who never booked
 -- LEFT JOIN ... IS NULL (anti-join): registered passengers without any ticket.
 SELECT P.PassengerID, P.Name, P.Email, P.CardType
 FROM Passenger P LEFT JOIN Ticket T ON T.PassengerID = P.PassengerID
-WHERE T.TicketID IS NULL;
+WHERE T.TicketID IS NULL
+LIMIT 10;
 
 -- 6. Driver workload
 -- Three-table LEFT JOIN: vehicle and number of scheduled runs per driver.
@@ -41,7 +46,8 @@ FROM Driver D
 LEFT JOIN Vehicle  V ON V.DriverID  = D.DriverID
 LEFT JOIN Schedule S ON S.VehicleID = V.VehicleID
 GROUP BY D.DriverID, D.Name, D.ShiftHours, V.VehicleNo
-ORDER BY ScheduledRuns DESC;
+ORDER BY ScheduledRuns DESC
+LIMIT 10;
 
 -- 7. Tickets by travel-card type
 -- Which pass types generate the most tickets and revenue.
@@ -61,14 +67,18 @@ ORDER BY R.RouteName, T.TicketID
 LIMIT 12;
 
 -- 9. Passenger rank within each travel-card type
--- CTE plus RANK() OVER (PARTITION BY card type ORDER BY spend): the biggest spenders of each card type.
+-- CTE plus RANK() OVER (PARTITION BY card type ORDER BY spend): the top three spenders of each card type.
 WITH spend AS (
     SELECT P.PassengerID, P.Name, P.CardType, COALESCE(SUM(T.Fare), 0) AS TotalSpent
     FROM Passenger P LEFT JOIN Ticket T ON T.PassengerID = P.PassengerID
-    GROUP BY P.PassengerID, P.Name, P.CardType)
-SELECT CardType, Name, TotalSpent,
-       RANK() OVER (PARTITION BY CardType ORDER BY TotalSpent DESC) AS RankInCard
-FROM spend
+    GROUP BY P.PassengerID, P.Name, P.CardType),
+ranked AS (
+    SELECT CardType, Name, TotalSpent,
+           RANK() OVER (PARTITION BY CardType ORDER BY TotalSpent DESC) AS RankInCard
+    FROM spend)
+SELECT CardType, Name, TotalSpent, RankInCard
+FROM ranked
+WHERE RankInCard <= 3
 ORDER BY CardType, RankInCard, Name;
 
 -- 10. Departures per hour of the day
@@ -92,9 +102,9 @@ ORDER BY A.AuditID DESC
 LIMIT 10;
 
 -- 13. Stored routines, transactions and the updatable view
-SELECT ScheduleID, RouteName, SeatsLeft(ScheduleID) AS SeatsLeft FROM Schedule JOIN Route USING (RouteID);
+SELECT ScheduleID, RouteName, SeatsLeft(ScheduleID) AS SeatsLeft FROM Schedule JOIN Route USING (RouteID) LIMIT 10;
 SELECT CalcFare(1, 1) AS FareForPassenger1OnSchedule1;
 -- CALL BookTicket(8, 1, 'F1', NULL);        -- books a seat; NULL fare = CalcFare; triggers validate it
 -- CALL TransferTicket(1, 2, 'Z9');          -- moves a ticket as ONE transaction (rolls back on any error)
 -- CALL CancelTicket(1);                     -- cancels a ticket (audit trigger logs it)
-SELECT VehicleNo, Status FROM ActiveVehicle; -- view WITH CHECK OPTION: an UPDATE that sets Status to 'Retired' is rejected
+SELECT VehicleNo, Status FROM ActiveVehicle LIMIT 10; -- view WITH CHECK OPTION: an UPDATE that sets Status to 'Retired' is rejected

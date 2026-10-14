@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Passengers{% endblock %}
 {% block content %}
+{% from '_pager.html' import pager, searchbox %}
 {% set cards = ['None', 'Daily', 'Weekly', 'Monthly'] %}
 <div class="page-head">
     <div><h1>Passengers</h1><p>Create, edit and remove registered passengers.</p></div>
@@ -8,8 +9,8 @@
 </div>
 
 <div class="card">
-    <div class="card-header"><span><i class="bi bi-people me-2"></i>Directory <span class="text-muted fw-normal">({{ passengers | length }})</span></span>
-        <input type="search" class="form-control form-control-sm search" placeholder="Search passengers…" data-filter="paxTable"></div>
+    <div class="card-header"><span><i class="bi bi-people me-2"></i>Directory <span class="text-muted fw-normal">({{ '{:,}'.format(pg.total) }})</span></span>
+        {{ searchbox('passengers', q, 'Search name, email, phone or ID') }}</div>
     <div class="table-wrap"><table class="table table-hover align-middle" id="paxTable">
         <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Card</th><th>Trips</th><th>Spent</th><th></th></tr></thead>
         <tbody>
@@ -28,9 +29,12 @@
                     </form>
                 </td>
             </tr>
+        {% else %}
+            <tr><td colspan="9" class="text-center text-muted py-4">{{ 'No passengers match your search.' if q else 'No passengers yet.' }}</td></tr>
         {% endfor %}
         </tbody>
     </table></div>
+    {{ pager(pg, 'passengers', q) }}
 </div>
 
 {% if role in ('staff', 'admin') %}

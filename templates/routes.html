@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Routes & Schedules{% endblock %}
 {% block content %}
+{% from '_pager.html' import pager, searchbox %}
 <div class="page-head">
     <div><h1>Routes &amp; Schedules</h1><p>Plan routes and the departures that run on them.</p></div>
     <div class="w-admin">
@@ -29,7 +30,7 @@
 
 <div class="card">
     <div class="card-header"><span><i class="bi bi-calendar3 me-2"></i>Schedules</span>
-        <input type="search" class="form-control form-control-sm search" placeholder="Search schedules…" data-filter="schTable"></div>
+        {{ searchbox('routes', q, 'Search route, vehicle or schedule no.') }}</div>
     <div class="table-wrap"><table class="table table-hover align-middle" id="schTable">
         <thead><tr><th>#</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Occupancy</th><th>Seats left</th><th></th></tr></thead>
         <tbody>
@@ -44,9 +45,12 @@
                 <td class="text-end"><form class="w-admin" action="{{ url_for('delete_schedule', sid=s.ScheduleID) }}" method="POST" data-confirm="Delete schedule #{{ s.ScheduleID }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></td>
             </tr>
+        {% else %}
+            <tr><td colspan="9" class="text-center text-muted py-4">{{ 'No departures match your search.' if q else 'No departures yet.' }}</td></tr>
         {% endfor %}
         </tbody>
     </table></div>
+    {{ pager(pg, 'routes', q) }}
 </div>
 
 {% if role == 'admin' %}

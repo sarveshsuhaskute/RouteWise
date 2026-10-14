@@ -15,12 +15,12 @@ users — and Flask provides the interface.
 |---|---|
 | **Login** | Session login, salted password hashes, three roles (see below) |
 | **Dashboard** | KPIs, revenue-by-route chart, busiest departures, recent bookings |
-| **Bookings** | Book via `BookTicket` (fare auto-calculated by `CalcFare`), **transfer** a ticket via `TransferTicket` (one transaction), cancel via `CancelTicket`, live search, CSV export |
-| **Passengers** | Add / edit / delete, trips and spend per passenger |
+| **Bookings** | Book via `BookTicket` (fare auto-calculated by `CalcFare`), **transfer** a ticket via `TransferTicket` (one transaction), cancel via `CancelTicket`, server-side search and pagination, CSV export |
+| **Passengers** | Add / edit / delete, trips and spend per passenger, search and pagination |
 | **Fleet & Drivers** | Vehicles and drivers CRUD, vehicle status (Active / Maintenance / Retired) |
 | **Routes & Schedules** | Routes and schedules CRUD, per-departure occupancy, no overlapping runs for one vehicle |
 | **Feedback** | Ratings per route, average rating per route |
-| **Reports** | 12 SQL reports — joins, GROUP BY/HAVING, subquery, anti-join, window functions, CTE, recursive CTE, a cursor procedure — with the query shown |
+| **Reports** | 12 SQL reports — joins, GROUP BY/HAVING, subquery, anti-join, window functions, CTE, recursive CTE, a cursor procedure — with the query shown (each report is capped to a short list, so it stays readable on large data) |
 | **Users** *(admin)* | Create and remove application users |
 
 ### Roles
@@ -128,8 +128,30 @@ fare rules change later. `TicketAudit` is a deliberate denormalised history log.
 | Back up (data, views, routines, triggers) | `scripts/backup.sh [file]` → `backups/public_transport_<timestamp>.sql` |
 | Restore into any database | `scripts/restore.sh file [target-database]` |
 | Index benchmark on 200,000 tickets | `.venv/bin/python scripts/benchmark.py` → `benchmarks/results.json` |
+| Load a large demo data set (≈ 3,000 passengers, 25,000 tickets) | `.venv/bin/python scripts/load_sample_data.py` (safe to re-run; `--scale 0.1` for a smaller set) |
 
 Admin tools use `MYSQL_ADMIN_USER` / `MYSQL_ADMIN_PASSWORD` (default: `root`, empty password).
+
+### Large sample data and pagination
+`schema.sql` seeds a small, readable demo (13 passengers, 24 tickets). To see the system at a realistic size, run the loader:
+
+```bash
+.venv/bin/python scripts/load_sample_data.py
+```
+
+It adds 30 routes, 66 vehicles and drivers, about 600 departures, about 3,000 passengers, about 25,000 tickets spread over
+the last 45 days and about 1,500 feedback entries in a few seconds. Every row goes through the application's own database
+user, so it passes the same constraints and triggers as real use; the loaded data has no overbooked vehicle, no duplicate
+seat, no overlapping run, and every ticket has an audit row. Running it twice does nothing.
+
+Long lists would be unusable at that size, so the application searches and pages on the server. Measured on the loaded data
+(24,811 tickets):
+
+| Page | Before | After |
+|---|---|---|
+| Bookings | 26 MB page, 24,812 table rows, 654 ms | **353 KB, 50 rows, ≈ 92 ms** (search and 50 per page) |
+| Passengers | 3.4 MB, 3,014 rows | **65 KB, 50 rows, ≈ 9 ms** |
+| Reports (12 queries) | 747 KB, 6,433 rows | **30 KB, 126 rows, ≈ 265 ms** |
 
 ### Index benchmark (200,000 tickets, separate database)
 Measured by `scripts/benchmark.py` (mean of 15 runs; numbers vary a little per machine):
@@ -141,10 +163,10 @@ Measured by `scripts/benchmark.py` (mean of 15 runs; numbers vary a little per m
 | Passenger spend per route (3-table join) | 0.3 ms | 23 ms | ≈ 78× | index nested-loop join → scan of the big table |
 
 ## Tests
-46 end-to-end tests: authentication, roles, CSRF, booking rules, triggers, audit log, fare calculation, CRUD,
+52 end-to-end tests: authentication, roles, CSRF, booking rules, triggers, audit log, fare calculation, CRUD,
 constraints, reports, **transactions and rollback, database privileges, the updatable view, window/CTE/cursor
 reports, backup and restore round trip**, regression tests for concurrency / overlapping schedules / CSV safety /
-validation, and a UI audit that presses every visible button as every role. They build throw-away databases from
+validation, a UI audit that presses every visible button as every role, and the large-data loader with search and pagination. They build throw-away databases from
 `schema.sql` and drop them afterwards — your real data is never touched.
 ```bash
 python -m unittest discover -s tests -v
@@ -156,7 +178,7 @@ python -m unittest discover -s tests -v
 app.py          Flask routes, auth, database helpers, report definitions
 schema.sql      tables, constraints, indexes, views, functions, procedures, triggers, privileges, seed data
 queries.sql     the 12 report queries, runnable in MySQL Workbench
-scripts/        backup.sh, restore.sh, benchmark.py
+scripts/        backup.sh, restore.sh, benchmark.py, load_sample_data.py
 benchmarks/     results.json (output of the last benchmark run)
 tests/          automated test suite
 templates/      Jinja2 pages (base layout + one template per page)

@@ -548,6 +548,92 @@ class OperationsTests(Base):
             mysql(f'DROP DATABASE IF EXISTS {target}')
 
 
+class LargeDataTests(Base):
+    """The sample-data loader fills a database with thousands of rows that obey every rule, and the app still copes."""
+    DB = 'transitiq_large'
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with open(os.path.join(ROOT, 'schema.sql')) as f:
+            schema = f.read().replace('public_transport', cls.DB)
+        mysql(f'DROP DATABASE IF EXISTS {cls.DB}')
+        mysql(stdin=schema)
+        cls.env = dict(os.environ, DB_NAME=cls.DB)
+        cls.load = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'load_sample_data.py'), '--scale', '0.15'],
+                                  env=cls.env, capture_output=True, text=True, check=True)
+        cls.original_db = cls.appmod.db_config['database']
+        cls.appmod.db_config['database'] = cls.DB
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.appmod.db_config['database'] = cls.original_db
+        mysql(f'DROP DATABASE IF EXISTS {cls.DB}')
+
+    def count(self, sql):
+        return self.appmod.query(sql)[0]['n']
+
+    def rows(self, html):
+        return html.count('<tr') - 1                                              # minus the header row
+
+    def test_loader_adds_thousands_of_rows(self):
+        self.assertGreater(self.count('SELECT COUNT(*) n FROM Passenger'), 400)
+        self.assertGreater(self.count('SELECT COUNT(*) n FROM Ticket'), 2000)
+        self.assertGreater(self.count('SELECT COUNT(*) n FROM Schedule'), 80)
+        self.assertGreater(self.count('SELECT COUNT(*) n FROM Feedback'), 200)
+        self.assertIn('Database now holds', self.load.stdout)
+
+    def test_loaded_data_obeys_every_rule(self):
+        self.assertEqual(self.count('SELECT COUNT(*) n FROM ScheduleOccupancy WHERE SeatsLeft < 0'), 0)                 # no overbooking
+        self.assertEqual(self.count('SELECT COUNT(*) n FROM (SELECT ScheduleID, SeatNo FROM Ticket GROUP BY 1, 2 HAVING COUNT(*) > 1) d'), 0)
+        self.assertEqual(self.count('SELECT COUNT(*) n FROM Schedule a JOIN Schedule b ON a.VehicleID = b.VehicleID AND a.ScheduleID < b.ScheduleID '
+                                    'AND a.DepartureTime < b.ArrivalTime AND a.ArrivalTime > b.DepartureTime'), 0)    # no overlapping runs
+        self.assertEqual(self.count("SELECT COUNT(*) n FROM Ticket T JOIN Schedule S USING (ScheduleID) JOIN Vehicle V USING (VehicleID) "
+                                    "WHERE V.Status <> 'Active'"), 0)
+        self.assertEqual(self.count("SELECT COUNT(*) n FROM Ticket T WHERE NOT EXISTS "
+                                    "(SELECT 1 FROM TicketAudit A WHERE A.TicketID = T.TicketID AND A.Action = 'BOOKED')"), 0)   # every ticket audited
+
+    def test_loader_is_idempotent(self):
+        before = self.count('SELECT COUNT(*) n FROM Ticket')
+        again = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'load_sample_data.py'), '--scale', '0.15'],
+                               env=self.env, capture_output=True, text=True, check=True)
+        self.assertIn('already loaded', again.stdout)
+        self.assertEqual(self.count('SELECT COUNT(*) n FROM Ticket'), before)
+
+    def test_long_lists_are_paginated_and_small(self):
+        self.login('admin')
+        html = self.client.get('/bookings').get_data(as_text=True)
+        self.assertEqual(self.rows(html), 50)
+        self.assertIn('Showing 1–50 of', html)
+        self.assertLess(len(html), 700_000)                                       # was tens of megabytes without pagination
+        second = self.client.get('/bookings?page=2').get_data(as_text=True)
+        self.assertNotEqual(re.findall(r'<td>#(\d+)</td>', html)[0], re.findall(r'<td>#(\d+)</td>', second)[0])
+        self.assertIn('Showing 51–100 of', second)
+        passengers = self.client.get('/passengers').get_data(as_text=True)
+        self.assertEqual(self.rows(passengers), 50)
+        self.assertLess(len(passengers), 200_000)
+
+    def test_search_filters_on_the_server_and_pages_are_clamped(self):
+        self.login('admin')
+        name = self.appmod.query('SELECT Name FROM Passenger WHERE Email LIKE %s LIMIT 1', ('%@demo.example',))[0]['Name']
+        hit = self.client.get('/passengers', query_string={'q': name}).get_data(as_text=True)
+        self.assertIn(name, hit)
+        self.assertLess(self.rows(hit), 50)                                       # narrowed, not the whole directory
+        none = self.client.get('/passengers?q=zzzz-nobody').get_data(as_text=True)
+        self.assertEqual(self.rows(none), 1)                                      # only the "no rows" line
+        self.assertEqual(self.client.get('/bookings?page=99999').status_code, 200)   # clamped to the last page
+        self.assertEqual(self.client.get('/bookings?page=abc').status_code, 200)     # junk page number ignored
+        self.assertIn('%', 'x%')                                                  # LIKE wildcards are bound parameters, never SQL text
+        self.assertEqual(self.client.get('/bookings', query_string={'q': "x' OR '1'='1"}).status_code, 200)
+
+    def test_reports_stay_short_on_large_data(self):
+        self.login('admin')
+        html = self.client.get('/reports').get_data(as_text=True)
+        self.assertLess(self.rows(html), 250)                                     # six thousand rows before the LIMITs
+        self.assertLess(len(html), 150_000)
+        self.assertEqual(self.client.get('/').status_code, 200)
+
+
 class ReportTests(Base):
     def test_every_report_query_runs(self):
         self.login()

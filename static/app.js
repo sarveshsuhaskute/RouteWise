@@ -36,3 +36,24 @@ setTimeout(function () {
         bootstrap.Alert.getOrCreateInstance(a).close();
     });
 }, 6000);
+
+// Long dropdowns (thousands of passengers): a small type-to-filter box above <select data-filterable>
+document.querySelectorAll('select[data-filterable]').forEach(function (sel) {
+    var all = Array.prototype.slice.call(sel.options).map(function (o) { return { value: o.value, text: o.text, disabled: o.disabled }; });
+    var box = document.createElement('input');
+    box.type = 'search'; box.className = 'form-control form-control-sm mb-1'; box.placeholder = 'Type to filter…';
+    box.setAttribute('aria-label', 'Filter the list');
+    sel.parentNode.insertBefore(box, sel);
+    box.addEventListener('input', function () {
+        var q = box.value.toLowerCase(), current = sel.value;
+        sel.innerHTML = '';
+        all.forEach(function (o) {
+            if (o.value === '' || o.text.toLowerCase().indexOf(q) !== -1) {
+                var op = document.createElement('option');
+                op.value = o.value; op.text = o.text; op.disabled = o.disabled;
+                if (o.value === current) op.selected = true;
+                sel.add(op);
+            }
+        });
+    });
+});
