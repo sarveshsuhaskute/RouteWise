@@ -135,3 +135,5 @@ body[data-role="viewer"] .w-staff, body[data-role="viewer"] .w-admin, body[data-
     background: radial-gradient(circle at 20% 15%, #134e4a 0, var(--nav) 55%); }
 .login-card { width: 100%; max-width: 400px; padding: 2rem; border-radius: 18px; border-top: 4px solid var(--accent); }
 .seat-input::placeholder { text-transform: none; font-weight: 400; letter-spacing: 0; }
+.form-check-input:checked { background-color: var(--brand); border-color: var(--brand); }
+.form-check-input:focus { border-color: var(--brand); box-shadow: 0 0 0 .2rem rgba(15, 118, 110, .15); }
