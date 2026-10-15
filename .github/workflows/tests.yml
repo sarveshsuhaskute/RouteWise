@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Start MySQL (installed on the runner; root password "root")
+        run: |
+          sudo systemctl start mysql.service
+          mysql -uroot -proot -e "SELECT VERSION(); SHOW VARIABLES LIKE 'event_scheduler';"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run the test suite (builds and drops its own throw-away databases)
+        env:
+          MYSQL_ADMIN_USER: root
+          MYSQL_ADMIN_PASSWORD: root
+        run: python -m unittest discover -s tests -v
