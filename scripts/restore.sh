@@ -2,7 +2,7 @@
 # Restore a backup made by backup.sh into a database (created if missing).
 #   scripts/restore.sh backup-file [target-database]
 # The target defaults to public_transport. Restoring over an existing database replaces its tables.
-# Database users are not part of a dump: run schema.sql (or its GRANT section) to recreate transitiq_app.
+# Database users are not part of a dump: run schema.sql (or its GRANT section) to recreate routewise_app.
 set -e
 FILE="${1:?usage: restore.sh backup-file [target-database]}"
 TARGET="${2:-${DB_NAME:-public_transport}}"

@@ -1,4 +1,4 @@
-"""Upgrade an existing TransitIQ database to the latest schema version without losing data.
+"""Upgrade an existing RouteWise database to the latest schema version without losing data.
 
     .venv/bin/python scripts/migrate.py                 # upgrade the database named by DB_NAME (default public_transport)
     .venv/bin/python scripts/migrate.py --db my_db      # another database
@@ -36,7 +36,7 @@ def scalar(db, sql):
 
 def current_version(db):
     if scalar(db, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'Ticket'") != '1':
-        sys.exit(f'Database {db} has no TransitIQ tables. Import schema.sql first.')
+        sys.exit(f'Database {db} has no RouteWise tables. Import schema.sql first.')
     has_table = scalar(db, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'SchemaVersion'")
     if has_table == '0':
         return 1                                   # created before versioning existed
@@ -79,7 +79,24 @@ def main():
         r = mysql([db], stdin=sql)
         if r.returncode != 0:
             sys.exit(f'Migration {version} failed:\n{r.stderr}\nRestore the backup with scripts/restore.sh if the database is now inconsistent.')
+    retire_old_app_user(db)
     print(f'Done. {db} is now at version {current_version(db)}.')
+
+
+def retire_old_app_user(db):
+    """Version 3 renamed the application's database user. Drop the old account, but only when no other existing
+    database still relies on it (MySQL accounts are server-wide)."""
+    old = 'transitiq_app'
+    if scalar(db, f"SELECT COUNT(*) FROM mysql.user WHERE user = '{old}'") != '1':
+        return
+    others = scalar(db, f"SELECT COUNT(*) FROM (SELECT db FROM mysql.db WHERE user = '{old}' UNION SELECT db FROM mysql.tables_priv "
+                        f"WHERE user = '{old}' UNION SELECT db FROM mysql.procs_priv WHERE user = '{old}') g "
+                        f"JOIN information_schema.schemata s ON s.schema_name = g.db WHERE g.db <> '{db}'")
+    if others == '0':
+        mysql([db, '-e', f"DROP USER IF EXISTS '{old}'@'localhost'"])
+        print(f'  Removed the old database account {old} (the application now uses routewise_app).')
+    else:
+        print(f'  Kept the old database account {old}: {others} other database(s) still use it.')
 
 
 if __name__ == '__main__':

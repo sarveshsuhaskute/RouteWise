@@ -11,10 +11,11 @@ import sys
 import time
 import unittest
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEST_DB = 'transitiq_test'
-os.environ['DB_NAME'] = TEST_DB          # must be set before app.py is imported
+TEST_DB = 'routewise_test'
+os.environ['DB_NAME'] = TEST_DB          # must be set before the application is imported
 sys.path.insert(0, ROOT)
 
 
@@ -40,10 +41,13 @@ def tearDownModule():
 class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import app as appmod
-        cls.appmod = appmod
-        appmod.app.config['TESTING'] = True
-        appmod.REPORT_CACHE_SECONDS = 0                              # tests always see fresh report data
+        import app as entry                                         # the same import the production server uses
+        from routewise import db
+        from routewise.views import reports
+        cls.appmod = SimpleNamespace(app=entry.app, query=db.query, execute=db.execute, call=db.call, query_proc=db.query_proc,
+                                     db_config=db.db_config, REPORTS=reports.REPORTS, reports=reports)
+        entry.app.config['TESTING'] = True
+        entry.app.config['REPORT_CACHE_SECONDS'] = 0                # tests always see fresh report data
 
     def setUp(self):
         self.client = self.appmod.app.test_client()
@@ -96,7 +100,7 @@ class RoleTests(Base):
 
     def test_staff_can_book_but_not_manage_fleet(self):
         self.login('staff')
-        self.assertIn('Ticket booked', self.post('/book', p_id=5, s_id=8, seat='ST1', fare=40))
+        self.assertIn('Ticket booked', self.post('/book', p_id=5, s_id=8, seat='6A', fare=40))
         self.assertIn('not allowed', self.post('/vehicles/add', vehicle_no='KA-00-S-1', type='Bus', capacity=10))
         self.assertEqual(self.client.get('/users').status_code, 302)       # admin-only page
 
@@ -113,13 +117,13 @@ class BookingTests(Base):
         self.login('admin')
 
     def test_booking_and_double_seat(self):
-        self.assertIn('Ticket booked', self.post('/book', p_id=1, s_id=2, seat='t1', fare=45))
-        self.assertIn('Seat already booked', self.post('/book', p_id=2, s_id=2, seat='T1', fare=45))
+        self.assertIn('Ticket booked: seat 9A', self.post('/book', p_id=1, s_id=2, seat='9a', fare=45))       # labels are upper-cased
+        self.assertIn('Seat already booked', self.post('/book', p_id=2, s_id=2, seat='9A', fare=45))
 
     def test_auto_fare_uses_card_discount(self):
         # passenger 1 = Monthly card (30% off); schedule 9 = route 335E, 35 km bus -> 35 * 1.5 = 52.50 -> 36.75
-        self.assertIn('Ticket booked', self.post('/book', p_id=1, s_id=9, seat='AF1'))
-        rows = self.appmod.query("SELECT Fare FROM Ticket WHERE ScheduleID=9 AND SeatNo='AF1'")
+        self.assertIn('Ticket booked', self.post('/book', p_id=1, s_id=9, seat='7A'))
+        rows = self.appmod.query("SELECT Fare FROM Ticket WHERE ScheduleID=9 AND SeatNo='7A'")
         self.assertEqual(float(rows[0]['Fare']), 36.75)
 
     def test_fare_api_matches_function(self):
@@ -133,8 +137,8 @@ class BookingTests(Base):
         vid = self.appmod.query("SELECT VehicleID FROM Vehicle WHERE VehicleNo='KA-00-T-2'")[0]['VehicleID']
         self.post('/schedules/add', route_id=1, vehicle_id=vid, departure='01:00', arrival='02:00')
         sid = self.appmod.query("SELECT MAX(ScheduleID) m FROM Schedule")[0]['m']
-        self.assertIn('Ticket booked', self.post('/book', p_id=1, s_id=sid, seat='F1', fare=10))
-        self.assertIn('Vehicle is full', self.post('/book', p_id=2, s_id=sid, seat='F2', fare=10))
+        self.assertIn('Ticket booked', self.post('/book', p_id=1, s_id=sid, seat='1A', fare=10))
+        self.assertIn('Vehicle is full', self.post('/book', p_id=2, s_id=sid, seat='1B', fare=10))
 
     def test_vehicle_in_maintenance_cannot_be_booked(self):
         self.post('/vehicles/add', vehicle_no='KA-00-M-3', type='Bus', capacity=10, status='Maintenance')
@@ -142,11 +146,11 @@ class BookingTests(Base):
         # schedules can only be created for active vehicles in the UI, so insert directly
         self.appmod.execute("INSERT INTO Schedule (RouteID, VehicleID, DepartureTime, ArrivalTime) VALUES (1, %s, '02:00', '03:00')", (vid,))
         sid = self.appmod.query("SELECT MAX(ScheduleID) m FROM Schedule")[0]['m']
-        self.assertIn('not in service', self.post('/book', p_id=1, s_id=sid, seat='M1', fare=10))
+        self.assertIn('not in service', self.post('/book', p_id=1, s_id=sid, seat='1A', fare=10))
 
     def test_cancel_writes_audit_log(self):
-        self.post('/book', p_id=3, s_id=3, seat='AU1', fare=30)
-        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE SeatNo='AU1'")[0]['TicketID']
+        self.post('/book', p_id=3, s_id=3, seat='8A', fare=30)
+        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID=3 AND SeatNo='8A'")[0]['TicketID']
         self.assertIn('cancelled', self.post(f'/cancel/{tid}'))
         actions = [r['Action'] for r in self.appmod.query("SELECT Action FROM TicketAudit WHERE TicketID=%s ORDER BY AuditID", (tid,))]
         self.assertEqual(actions, ['BOOKED', 'CANCELLED'])
@@ -200,14 +204,14 @@ class RegressionTests(Base):
         vid = self.appmod.query("SELECT VehicleID v FROM Vehicle WHERE VehicleNo='KA-00-RACE'")[0]['v']
         self.post('/schedules/add', route_id=1, vehicle_id=vid, departure='03:00', arrival='04:00')
         sid = self.appmod.query("SELECT MAX(ScheduleID) m FROM Schedule")[0]['m']
-        barrier, errors = threading.Barrier(20), []
+        barrier, errors, seats = threading.Barrier(20), [], ['1A', '1B', '1C', '1D', '2A']   # the whole seat map
 
         def book(i):
             conn = mysql.connector.connect(**self.appmod.db_config)
             barrier.wait()
             try:
                 cur = conn.cursor()
-                cur.callproc('BookTicket', [1 + i % 13, sid, f'S{i}', 10, None])
+                cur.callproc('BookTicket', [1 + i % 13, sid, seats[i % 5], 10, None])     # four sessions fight for every seat
                 conn.commit()
             except mysql.connector.Error as e:
                 errors.append(e.msg)
@@ -219,7 +223,7 @@ class RegressionTests(Base):
         stored = self.appmod.query("SELECT COUNT(*) n FROM Ticket WHERE ScheduleID=%s", (sid,))[0]['n']
         self.assertEqual(stored, 5)                                              # exactly the capacity
         self.assertEqual(len(errors), 15)
-        self.assertTrue(all('Vehicle is full' in e for e in errors), errors)     # no deadlock errors
+        self.assertTrue(all('Vehicle is full' in e or 'Seat already booked' in e for e in errors), errors)   # no deadlock errors
 
     def test_vehicle_cannot_have_overlapping_runs(self):
         # vehicle 1 already runs 06:00-07:30
@@ -229,7 +233,7 @@ class RegressionTests(Base):
     def test_csv_export_neutralises_formulas(self):
         self.post('/passengers/add', name='=HYPERLINK("http://evil","x")', email='csvinj@x.com')
         pid = self.appmod.query("SELECT PassengerID p FROM Passenger WHERE Email='csvinj@x.com'")[0]['p']
-        self.post('/book', p_id=pid, s_id=3, seat='CSV9', fare=5)
+        self.post('/book', p_id=pid, s_id=3, seat='8B', fare=5)
         text = self.client.get('/bookings/export.csv').get_data(as_text=True)
         self.assertIn("\"'=HYPERLINK", text)
         self.assertNotIn(',"=HYPERLINK', text)
@@ -280,7 +284,7 @@ class _Scan(__import__('html.parser', fromlist=['HTMLParser']).HTMLParser):
 
 class UiAuditTests(Base):
     """Every role, every page, every visible button, on a private database (the buttons really are pressed)."""
-    DB = 'transitiq_matrix'
+    DB = 'routewise_matrix'
     PW = {'admin': 'admin123', 'staff': 'staff123', 'viewer': 'viewer123'}
 
     @classmethod
@@ -357,7 +361,7 @@ class UiAuditTests(Base):
         for path, code in (('/no-such-page', 404), ('/book', 405)):
             r = c.get(path)
             self.assertEqual(r.status_code, code)
-            self.assertIn('TransitIQ', r.get_data(as_text=True))
+            self.assertIn('RouteWise', r.get_data(as_text=True))
         r = c.post('/book', data={'p_id': 1})                                       # no CSRF token
         self.assertEqual(r.status_code, 400)
         self.assertIn('session may have expired', r.get_data(as_text=True))
@@ -394,24 +398,24 @@ class TransactionTests(Base):
         return (self.appmod.query("SELECT COUNT(*) n FROM Ticket")[0]['n'], self.appmod.query("SELECT COUNT(*) n FROM TicketAudit")[0]['n'])
 
     def test_transfer_moves_the_ticket_recalculates_the_fare_and_audits_both_steps(self):
-        self.post('/book', p_id=5, s_id=8, seat='TR1', fare=40)                    # passenger 5 has no card (no discount)
-        old = self.ticket(8, 'TR1')
-        self.assertIn('moved to schedule #2', self.post(f"/transfer/{old['TicketID']}", s_id=2, seat='tr9'))
-        self.assertIsNone(self.ticket(8, 'TR1'))                                   # old seat freed
-        new = self.ticket(2, 'TR9')                                                # seat upper-cased
+        self.post('/book', p_id=5, s_id=8, seat='6B', fare=40)                     # passenger 5 has no card (no discount)
+        old = self.ticket(8, '6B')
+        self.assertIn('moved to schedule #2', self.post(f"/transfer/{old['TicketID']}", s_id=2, seat='9b'))
+        self.assertIsNone(self.ticket(8, '6B'))                                    # old seat freed
+        new = self.ticket(2, '9B')                                                 # seat upper-cased
         self.assertEqual(new['PassengerID'], 5)
         self.assertEqual(float(new['Fare']), 38.25)                                # CalcFare for the new route (25.5 km x 1.5)
         actions = [r['Action'] for r in self.appmod.query(
-            "SELECT Action FROM TicketAudit WHERE SeatNo IN ('TR1','TR9') ORDER BY AuditID")]
+            "SELECT Action FROM TicketAudit WHERE TicketID IN (%s, %s) ORDER BY AuditID", (old['TicketID'], new['TicketID']))]
         self.assertEqual(actions, ['BOOKED', 'CANCELLED', 'BOOKED'])
 
     def test_failed_transfer_rolls_everything_back(self):
-        self.post('/book', p_id=5, s_id=8, seat='TR2', fare=40)
-        self.post('/book', p_id=6, s_id=2, seat='TR3', fare=40)                    # the seat the first passenger wants
+        self.post('/book', p_id=5, s_id=8, seat='6C', fare=40)
+        self.post('/book', p_id=6, s_id=2, seat='9C', fare=40)                     # the seat the first passenger wants
         before = self.counts()
-        mine = self.ticket(8, 'TR2')
-        self.assertIn('Seat already booked', self.post(f"/transfer/{mine['TicketID']}", s_id=2, seat='TR3'))
-        self.assertEqual(self.ticket(8, 'TR2')['TicketID'], mine['TicketID'])      # original ticket untouched
+        mine = self.ticket(8, '6C')
+        self.assertIn('Seat already booked', self.post(f"/transfer/{mine['TicketID']}", s_id=2, seat='9C'))
+        self.assertEqual(self.ticket(8, '6C')['TicketID'], mine['TicketID'])       # original ticket untouched
         self.assertEqual(self.counts(), before)                                    # no ticket and no audit row appeared or vanished
 
     def test_transfer_to_a_vehicle_under_maintenance_rolls_back(self):
@@ -419,20 +423,20 @@ class TransactionTests(Base):
         vid = self.appmod.query("SELECT VehicleID v FROM Vehicle WHERE VehicleNo='KA-00-TRM'")[0]['v']
         self.post('/schedules/add', route_id=1, vehicle_id=vid, departure='23:00', arrival='23:30')
         sid = self.appmod.query("SELECT MAX(ScheduleID) m FROM Schedule")[0]['m']
-        self.post('/book', p_id=7, s_id=8, seat='TR4', fare=40)
-        before, mine = self.counts(), self.ticket(8, 'TR4')
-        self.assertIn('not in service', self.post(f"/transfer/{mine['TicketID']}", s_id=sid, seat='A1'))
-        self.assertIsNotNone(self.ticket(8, 'TR4'))
+        self.post('/book', p_id=7, s_id=8, seat='7A', fare=40)
+        before, mine = self.counts(), self.ticket(8, '7A')
+        self.assertIn('not in service', self.post(f"/transfer/{mine['TicketID']}", s_id=sid, seat='1A'))
+        self.assertIsNotNone(self.ticket(8, '7A'))
         self.assertEqual(self.counts(), before)
 
     def test_unknown_ticket_and_missing_fields(self):
-        self.assertIn('Ticket not found', self.post('/transfer/999999', s_id=2, seat='Z1'))
+        self.assertIn('Ticket not found', self.post('/transfer/999999', s_id=2, seat='11A'))
         self.assertIn('Choose the new departure', self.post('/transfer/1', s_id='', seat=''))
 
     def test_only_staff_and_admin_can_transfer(self):
         self.client = self.appmod.app.test_client()
         self.client.post('/login', data={'username': 'viewer', 'password': 'viewer123', 'csrf_token': self.token()})
-        self.assertIn('not allowed', self.post('/transfer/1', s_id=2, seat='Z1'))
+        self.assertIn('not allowed', self.post('/transfer/1', s_id=2, seat='11A'))
         self.assertNotIn('transferModal', self.client.get('/bookings').get_data(as_text=True))
 
 
@@ -450,7 +454,8 @@ class PrivilegeTests(Base):
         import mysql.connector
         for stmt in ('DROP TABLE Feedback', 'ALTER TABLE Ticket ADD COLUMN zz INT', 'CREATE TABLE zz (a INT)',
                      "UPDATE TicketAudit SET Action = 'FORGED'", 'DELETE FROM TicketAudit', 'DROP TRIGGER AuditBooking',
-                     "CREATE USER 'x'@'localhost'", 'TRUNCATE TABLE Ticket'):
+                     "CREATE USER 'x'@'localhost'", 'TRUNCATE TABLE Ticket', "INSERT INTO Seat VALUES (1, '99A', 'Window')",
+                     'DELETE FROM Seat', 'DROP EVENT PurgeLoginAttempts'):
             conn = self.app_conn()
             try:
                 with self.assertRaises(mysql.connector.Error, msg=stmt) as cm:
@@ -463,7 +468,7 @@ class PrivilegeTests(Base):
         conn = self.app_conn()
         cur = conn.cursor()
         cur.execute('SELECT COUNT(*) FROM TicketAudit'); before = cur.fetchone()[0]
-        cur.callproc('BookTicket', [13, 9, 'PRV1', 10, None]); conn.commit()               # the app has no INSERT right on TicketAudit...
+        cur.callproc('BookTicket', [13, 9, '7B', 10, None]); conn.commit()               # the app has no INSERT right on TicketAudit...
         cur.execute('SELECT COUNT(*) FROM TicketAudit'); after = cur.fetchone()[0]
         conn.close()
         self.assertEqual(after, before + 1)                                          # ...yet the trigger recorded the booking
@@ -527,7 +532,7 @@ class OperationsTests(Base):
 
     def test_backup_then_restore_round_trip(self):
         import tempfile
-        target = 'transitiq_restore_test'
+        target = 'routewise_restore_test'
         env = dict(os.environ, DB_NAME=TEST_DB, MYSQL_PWD=os.environ.get('MYSQL_ADMIN_PASSWORD', ''))
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -542,7 +547,8 @@ class OperationsTests(Base):
                      f" (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='{db}' AND table_type='BASE TABLE'),"
                      f" (SELECT COUNT(*) FROM information_schema.views WHERE table_schema='{db}'),"
                      f" (SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='{db}'),"
-                     f" (SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='{db}')")
+                     f" (SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='{db}'),"
+                     f" (SELECT COUNT(*) FROM information_schema.events WHERE event_schema='{db}'), (SELECT COUNT(*) FROM {db}.Seat)")
                 env2 = dict(os.environ, MYSQL_PWD=os.environ.get('MYSQL_ADMIN_PASSWORD', ''))
                 return subprocess.run(['mysql', '-N', '-u', os.environ.get('MYSQL_ADMIN_USER', 'root'), '-e', q],
                                       env=env2, check=True, capture_output=True, text=True).stdout
@@ -553,7 +559,7 @@ class OperationsTests(Base):
 
 class LargeDataTests(Base):
     """The sample-data loader fills a database with thousands of rows that obey every rule, and the app still copes."""
-    DB = 'transitiq_large'
+    DB = 'routewise_large'
 
     @classmethod
     def setUpClass(cls):
@@ -595,6 +601,10 @@ class LargeDataTests(Base):
                                     "WHERE V.Status <> 'Active'"), 0)
         self.assertEqual(self.count("SELECT COUNT(*) n FROM Ticket T WHERE NOT EXISTS "
                                     "(SELECT 1 FROM TicketAudit A WHERE A.TicketID = T.TicketID AND A.Action = 'BOOKED')"), 0)   # every ticket audited
+        self.assertEqual(self.count("SELECT COUNT(*) n FROM Ticket T JOIN Schedule S USING (ScheduleID) WHERE NOT EXISTS "
+                                    "(SELECT 1 FROM Seat ST WHERE ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo)"), 0)   # real seats only
+        self.assertEqual(self.count('SELECT COUNT(*) n FROM Ticket WHERE RunsOn(ScheduleID, TravelDate) = FALSE'), 0)        # only on service days
+        self.assertGreater(self.count("SELECT COUNT(*) n FROM Schedule WHERE ServiceDays = 'Mon,Tue,Wed,Thu,Fri'"), 5)
 
     def test_loader_is_idempotent(self):
         before = self.count('SELECT COUNT(*) n FROM Ticket')
@@ -658,35 +668,36 @@ class TripTests(Base):
         return self.appmod.query('SELECT MAX(ScheduleID) m FROM Schedule')[0]['m']
 
     def test_same_seat_on_another_day_is_free_but_not_twice_on_one_day(self):
-        self.assertIn('Ticket booked', self.book(1, 2, 'TD1'))
-        self.assertIn('Ticket booked', self.book(2, 2, 'TD1', self.today + timedelta(days=1)))      # same seat, tomorrow
-        self.assertIn('Seat already booked', self.book(3, 2, 'TD1'))                                # same seat, same day
-        self.assertIn('Seat already booked', self.book(3, 2, 'TD1', self.today + timedelta(days=1)))
+        self.assertIn('Ticket booked', self.book(1, 2, '10A'))
+        self.assertIn('Ticket booked', self.book(2, 2, '10A', self.today + timedelta(days=1)))      # same seat, tomorrow
+        self.assertIn('Seat already booked', self.book(3, 2, '10A'))                                # same seat, same day
+        self.assertIn('Seat already booked', self.book(3, 2, '10A', self.today + timedelta(days=1)))
 
     def test_past_and_too_distant_dates_are_refused(self):
-        self.assertIn('in the past', self.book(1, 2, 'TD2', self.today - timedelta(days=1)))
-        self.assertIn('at most 30 days ahead', self.book(1, 2, 'TD2', self.today + timedelta(days=31)))
-        self.assertIn('Ticket booked', self.book(1, 2, 'TD2', self.today + timedelta(days=30)))
-        self.assertIn('not a valid date', self.post('/book', p_id=1, s_id=2, seat='TD3', fare='', travel_date='2026-13-45'))
+        self.assertIn('in the past', self.book(1, 2, '10B', self.today - timedelta(days=1)))
+        self.assertIn('at most 30 days ahead', self.book(1, 2, '10B', self.today + timedelta(days=31)))
+        self.assertIn('Ticket booked', self.book(1, 2, '10B', self.today + timedelta(days=30)))
+        self.assertIn('not a valid date', self.post('/book', p_id=1, s_id=2, seat='10C', fare='', travel_date='2026-13-45'))
 
     def test_capacity_is_counted_per_trip(self):
         sid = self.new_schedule('KA-00-TRIP', 2, '02:10', '02:40')
         tomorrow = self.today + timedelta(days=1)
-        self.assertIn('Ticket booked', self.book(1, sid, 'C1'))
-        self.assertIn('Ticket booked', self.book(2, sid, 'C2'))
-        self.assertIn('Vehicle is full', self.book(3, sid, 'C3'))                                   # today's trip is full ...
-        self.assertIn('Ticket booked', self.book(3, sid, 'C3', tomorrow))                           # ... tomorrow's is empty
+        self.assertIn('Ticket booked', self.book(1, sid, '1A'))
+        self.assertIn('Ticket booked', self.book(2, sid, '1B'))
+        self.assertIn('Vehicle is full', self.book(3, sid, '1C'))                                   # today's trip is full ...
+        self.assertIn('Ticket booked', self.book(3, sid, '1A', tomorrow))                           # ... tomorrow's is empty
         rows = self.appmod.query('SELECT TravelDate, Booked, SeatsLeft FROM TripOccupancy WHERE ScheduleID = %s ORDER BY TravelDate', (sid,))
         self.assertEqual([(r['Booked'], r['SeatsLeft']) for r in rows], [(2, 0), (1, 1)])
 
     def test_seats_left_api_and_function_use_the_chosen_date(self):
         sid = self.new_schedule('KA-00-API', 3, '02:50', '03:20')
-        self.book(1, sid, 'A1')
+        self.book(1, sid, '1A')
         today = self.client.get(f'/api/seats?s={sid}&d={self.today.isoformat()}').get_json()
         tomorrow = self.client.get(f'/api/seats?s={sid}&d={(self.today + timedelta(days=1)).isoformat()}').get_json()
         self.assertEqual((today['left'], today['capacity']), (2, 3))
         self.assertEqual(tomorrow['left'], 3)
         self.assertIsNone(self.client.get('/api/seats?s=x&d=nonsense').get_json()['left'])
+        self.assertEqual([(x['no'], x['taken']) for x in today['seats']], [('1A', True), ('1B', False), ('1C', False)])
 
     def test_booking_form_and_list_show_travel_dates(self):
         html = self.client.get('/bookings').get_data(as_text=True)
@@ -696,14 +707,14 @@ class TripTests(Base):
         self.assertIn('TravelDate', self.client.get('/bookings/export.csv').get_data(as_text=True).splitlines()[0])
 
     def test_transfer_can_move_the_ticket_to_another_day(self):
-        self.book(5, 8, 'TD7')
-        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 8 AND SeatNo = 'TD7' AND TravelDate = CURDATE()")[0]['TicketID']
+        self.book(5, 8, '7B')
+        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 8 AND SeatNo = '7B' AND TravelDate = CURDATE()")[0]['TicketID']
         tomorrow = self.today + timedelta(days=1)
-        self.assertIn('moved to schedule', self.post(f'/transfer/{tid}', s_id=2, seat='TD7', travel_date=tomorrow.isoformat()))
-        row = self.appmod.query("SELECT TravelDate, ScheduleID FROM Ticket WHERE PassengerID = 5 AND SeatNo = 'TD7'")[0]
+        self.assertIn('moved to schedule', self.post(f'/transfer/{tid}', s_id=2, seat='10C', travel_date=tomorrow.isoformat()))
+        row = self.appmod.query("SELECT TravelDate, ScheduleID FROM Ticket WHERE PassengerID = 5 AND SeatNo = '10C'")[0]
         self.assertEqual((row['TravelDate'], row['ScheduleID']), (tomorrow, 2))
-        tid2 = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 2 AND SeatNo = 'TD7'")[0]['TicketID']
-        self.assertIn('in the past', self.post(f'/transfer/{tid2}', s_id=2, seat='TD8', travel_date=(self.today - timedelta(days=2)).isoformat()))
+        tid2 = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 2 AND SeatNo = '10C'")[0]['TicketID']
+        self.assertIn('in the past', self.post(f'/transfer/{tid2}', s_id=2, seat='10D', travel_date=(self.today - timedelta(days=2)).isoformat()))
         self.assertIsNotNone(self.appmod.query('SELECT 1 x FROM Ticket WHERE TicketID = %s', (tid2,)))
 
 
@@ -749,8 +760,8 @@ class ReferenceDataTests(Base):
     def test_audit_trail_records_who_acted(self):
         self.client = self.appmod.app.test_client()
         self.client.post('/login', data={'username': 'staff', 'password': 'staff123', 'csrf_token': self.token()})
-        self.post('/book', p_id=7, s_id=8, seat='AC1', fare='')
-        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 8 AND SeatNo = 'AC1'")[0]['TicketID']
+        self.post('/book', p_id=7, s_id=8, seat='7C', fare='')
+        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 8 AND SeatNo = '7C'")[0]['TicketID']
         self.client = self.appmod.app.test_client()
         self.client.post('/login', data={'username': 'admin', 'password': 'admin123', 'csrf_token': self.token()})
         self.post(f'/cancel/{tid}')
@@ -759,13 +770,14 @@ class ReferenceDataTests(Base):
         self.assertEqual(rows[0]['TravelDate'], date.today())
 
     def test_schema_version_is_recorded(self):
-        self.assertEqual(self.appmod.query('SELECT MAX(Version) v FROM SchemaVersion')[0]['v'], 2)
+        self.assertEqual(self.appmod.query('SELECT MAX(Version) v FROM SchemaVersion')[0]['v'], 3)
 
 
 class AccountSecurityTests(Base):
     """Own-password change and the sign-in attempt limit."""
 
     def make_user(self, name, password='initial-pass1', role='staff'):
+        self.client = self.appmod.app.test_client()
         self.login('admin')
         self.post('/users/add', username=name, full_name=name, password=password, role=role)
 
@@ -800,15 +812,36 @@ class AccountSecurityTests(Base):
     def test_repeated_wrong_passwords_lock_the_account_for_a_while(self):
         self.make_user('lockme')
         try:
-            for _ in range(self.appmod.LOGIN_MAX_FAILURES):
+            for _ in range(self.appmod.app.config['LOGIN_MAX_FAILURES']):
                 self.assertEqual(self.sign_in('lockme', 'wrong-password').status_code, 200)
             locked = self.sign_in('lockme', 'initial-pass1')                                       # even the CORRECT password is refused now
             self.assertEqual(locked.status_code, 429)
             self.assertIn('Too many failed sign-in attempts', locked.get_data(as_text=True))
             self.assertEqual(self.sign_in('admin', 'admin123').status_code, 302)                   # other users are not affected
+            # the count lives in the database, so it survives a restart and is shared by every server process
+            row = self.appmod.query("SELECT Failures FROM LoginAttempt WHERE Username = 'lockme'")[0]
+            self.assertEqual(row['Failures'], self.appmod.app.config['LOGIN_MAX_FAILURES'])
         finally:
-            self.appmod._failed_logins.clear()
-        self.assertEqual(self.sign_in('lockme', 'initial-pass1').status_code, 302)                 # lock expires / is cleared
+            self.appmod.execute("DELETE FROM LoginAttempt WHERE Username = 'lockme'")                # what the lock expiring does
+        self.assertEqual(self.sign_in('lockme', 'initial-pass1').status_code, 302)
+        self.assertEqual(self.appmod.query("SELECT COUNT(*) n FROM LoginAttempt WHERE Username = 'lockme'")[0]['n'], 0)   # cleared on success
+
+    def test_a_failure_after_the_window_starts_a_new_count(self):
+        self.make_user('slowpoke')
+        for _ in range(4):
+            self.sign_in('slowpoke', 'wrong-password')
+        mysql(f"UPDATE {TEST_DB}.LoginAttempt SET FirstFailure = NOW() - INTERVAL 11 MINUTE WHERE Username = 'slowpoke'")
+        self.sign_in('slowpoke', 'wrong-password')
+        self.assertEqual(self.appmod.query("SELECT Failures FROM LoginAttempt WHERE Username = 'slowpoke'")[0]['Failures'], 1)
+        self.assertEqual(self.sign_in('slowpoke', 'initial-pass1').status_code, 302)
+
+    def test_demo_passwords_are_flagged_and_cannot_be_chosen_again(self):
+        self.login('staff')
+        self.assertIn('published demo password', self.client.get('/').get_data(as_text=True))
+        self.assertIn('demo passwords', self.post('/account/password', current='staff123', new='admin123', confirm='admin123'))
+        self.make_user('notdemo')
+        self.sign_in('notdemo', 'initial-pass1')
+        self.assertNotIn('published demo password', self.client.get('/').get_data(as_text=True))
 
     def test_production_server_serves_the_application(self):
         """Runs the exact command from the README (python -m waitress ... app:app) as a separate process."""
@@ -828,7 +861,7 @@ class AccountSecurityTests(Base):
                 except OSError:
                     time.sleep(0.2)
             self.assertIsNotNone(body, 'the production server did not start')
-            self.assertIn('TransitIQ', body)
+            self.assertIn('RouteWise', body)
         finally:
             proc.terminate()
             proc.wait(timeout=10)
@@ -836,14 +869,15 @@ class AccountSecurityTests(Base):
 
 class MigrationTests(unittest.TestCase):
     """Upgrading a version-1 database with scripts/migrate.py gives exactly a fresh install and keeps the data."""
-    OLD, NEW = 'transitiq_mig_old', 'transitiq_mig_new'
+    OLD, NEW = 'routewise_mig_old', 'routewise_mig_new'
     SIGNATURE = (
         "SELECT 'col', CONCAT_WS('|', table_name, ordinal_position, column_name, column_type, is_nullable, IFNULL(column_default,'-'), extra) FROM information_schema.columns WHERE table_schema = DATABASE() "
-        "UNION ALL SELECT 'idx', CONCAT_WS('|', table_name, index_name, non_unique, GROUP_CONCAT(column_name ORDER BY seq_in_index)) FROM information_schema.statistics WHERE table_schema = DATABASE() GROUP BY table_name, index_name, non_unique "
+        "UNION ALL SELECT 'idx', CONCAT_WS('|', table_name, index_name, non_unique, index_type, GROUP_CONCAT(column_name ORDER BY seq_in_index)) FROM information_schema.statistics WHERE table_schema = DATABASE() GROUP BY table_name, index_name, non_unique, index_type "
         "UNION ALL SELECT 'chk', CONCAT_WS('|', tc.table_name, tc.constraint_name, cc.check_clause) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'CHECK' "
         "UNION ALL SELECT 'fk', CONCAT_WS('|', table_name, constraint_name, referenced_table_name, delete_rule) FROM information_schema.referential_constraints WHERE constraint_schema = DATABASE() "
         "UNION ALL SELECT 'trg', CONCAT_WS('|', trigger_name, event_object_table, action_timing, event_manipulation, action_order, action_statement) FROM information_schema.triggers WHERE trigger_schema = DATABASE() "
         "UNION ALL SELECT 'rtn', CONCAT_WS('|', routine_name, routine_type, routine_definition) FROM information_schema.routines WHERE routine_schema = DATABASE() "
+        "UNION ALL SELECT 'evt', CONCAT_WS('|', event_name, interval_value, interval_field, event_definition) FROM information_schema.events WHERE event_schema = DATABASE() "
         "UNION ALL SELECT 'view', CONCAT_WS('|', table_name, view_definition) FROM information_schema.views WHERE table_schema = DATABASE() ORDER BY 1, 2")
 
     def setUp(self):
@@ -873,12 +907,15 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*), SUM(Fare) FROM Ticket'), before)                 # no ticket or fare lost
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Ticket WHERE TravelDate = DATE(BookingDate)'), before.split()[0])
-        self.assertEqual(self.scalar(self.OLD, 'SELECT MAX(Version) FROM SchemaVersion'), '2')
+        self.assertEqual(self.scalar(self.OLD, 'SELECT MAX(Version) FROM SchemaVersion'), '3')
+        self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Ticket T JOIN Schedule S USING (ScheduleID) WHERE NOT EXISTS '
+                                               '(SELECT 1 FROM Seat ST WHERE ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo)'), '0')   # seats relabelled
+        self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Vehicle V WHERE Capacity <> (SELECT COUNT(*) FROM Seat ST WHERE ST.VehicleID = V.VehicleID)'), '0')
         with open(os.path.join(ROOT, 'schema.sql')) as f:
             mysql(stdin=f.read().replace('public_transport', self.NEW))
         upgraded = self.scalar(self.OLD, self.SIGNATURE).replace(self.OLD, 'DB')
         fresh = self.scalar(self.NEW, self.SIGNATURE).replace(self.NEW, 'DB')
-        self.assertGreater(len(fresh.splitlines()), 150)
+        self.assertGreater(len(fresh.splitlines()), 200)
         self.assertEqual(upgraded.splitlines(), fresh.splitlines())                                              # structure, constraints, triggers, routines, views
         again = self.migrate()
         self.assertIn('Up to date', again.stdout)
@@ -898,11 +935,15 @@ class ConcurrencyTests(Base):
         import threading
         self.login('admin')
         group_a, group_b = range(1, 7), range(7, 13)
-        for i in group_a:
-            self.post('/book', p_id=i, s_id=8, seat=f'CA{i}', fare='')
-        for i in group_b:
-            self.post('/book', p_id=i, s_id=9, seat=f'CB{i}', fare='')
-        ids = {r['PassengerID']: r['TicketID'] for r in self.appmod.query("SELECT PassengerID, TicketID FROM Ticket WHERE SeatNo LIKE 'C%'")}
+        seats_a, seats_b = ['8A', '8B', '8C', '9A', '9B', '9C'], ['8A', '8B', '8C', '8D', '9A', '9B']   # on schedules 8 and 9
+        new_a, new_b = ['10A', '10B', '10C', '10D', '6A', '6B'], ['1A', '1B', '1C', '2A', '2B', '2C']   # free seats on 9 and 8
+        for i, seat in zip(group_a, seats_a):
+            self.post('/book', p_id=i, s_id=8, seat=seat, fare='')
+        for i, seat in zip(group_b, seats_b):
+            self.post('/book', p_id=i, s_id=9, seat=seat, fare='')
+        ids = {r['PassengerID']: r['TicketID'] for r in self.appmod.query(
+            "SELECT PassengerID, TicketID FROM Ticket WHERE TravelDate = CURDATE() AND "
+            "((ScheduleID = 8 AND SeatNo IN ('8A','8B','8C','9A','9B','9C')) OR (ScheduleID = 9 AND SeatNo IN ('8A','8B','8C','8D','9A','9B')))")}
         self.assertEqual(len(ids), 12)
         barrier, errors = threading.Barrier(12), []
 
@@ -912,15 +953,16 @@ class ConcurrencyTests(Base):
                 self.appmod.call('TransferTicket', [ids[passenger], target, seat, None])     # call() retries a deadlock victim
             except Exception as err:                                                         # noqa: BLE001
                 errors.append(repr(err))
-        threads = [threading.Thread(target=move, args=(i, 9, f'CV{i}')) for i in group_a] + \
-                  [threading.Thread(target=move, args=(i, 8, f'CW{i}')) for i in group_b]
+        threads = [threading.Thread(target=move, args=(i, 9, seat)) for i, seat in zip(group_a, new_a)] + \
+                  [threading.Thread(target=move, args=(i, 8, seat)) for i, seat in zip(group_b, new_b)]
         [t.start() for t in threads]
         [t.join() for t in threads]
         self.assertEqual(errors, [])
-        rows = self.appmod.query("SELECT PassengerID, ScheduleID, SeatNo FROM Ticket WHERE SeatNo LIKE 'CV%' OR SeatNo LIKE 'CW%'")
-        self.assertEqual(sorted(r['PassengerID'] for r in rows), list(range(1, 13)))         # exactly one ticket each
-        self.assertTrue(all((r['ScheduleID'] == 9) == r['SeatNo'].startswith('CV') for r in rows))
-        self.assertEqual(self.appmod.query("SELECT COUNT(*) n FROM Ticket WHERE SeatNo LIKE 'CA%' OR SeatNo LIKE 'CB%'")[0]['n'], 0)
+        rows = self.appmod.query("SELECT PassengerID, ScheduleID FROM Ticket WHERE TravelDate = CURDATE() AND "
+                                 "((ScheduleID = 9 AND SeatNo IN ('10A','10B','10C','10D','6A','6B')) OR (ScheduleID = 8 AND SeatNo IN ('1A','1B','1C','2A','2B','2C')))")
+        self.assertEqual(sorted(r['PassengerID'] for r in rows), list(range(1, 13)))         # exactly one ticket each ...
+        self.assertTrue(all((r['ScheduleID'] == 9) == (r['PassengerID'] <= 6) for r in rows))  # ... on the other departure
+        self.assertEqual(self.appmod.query('SELECT COUNT(*) n FROM Ticket WHERE TicketID IN (%s)' % ','.join(map(str, ids.values())))[0]['n'], 0)
 
 
 class IsolationDemoTests(unittest.TestCase):
@@ -937,23 +979,24 @@ class IsolationDemoTests(unittest.TestCase):
 class OperationsToolsTests(Base):
     def test_report_cache_reuses_results_and_can_be_refreshed(self):
         self.login('admin')
-        self.appmod.REPORT_CACHE_SECONDS = 60
+        config, cache = self.appmod.app.config, self.appmod.reports._report_cache
+        config['REPORT_CACHE_SECONDS'] = 60
         try:
-            self.appmod._report_cache.update(results=None)
+            cache.update(results=None)
             first = self.client.get('/reports').get_data(as_text=True)
             self.assertIn('kept for 60 s', first)
-            cached_at = self.appmod._report_cache['at']
+            cached_at = cache['at']
             self.client.get('/reports')
-            self.assertEqual(self.appmod._report_cache['at'], cached_at)                  # second view reused the results
+            self.assertEqual(cache['at'], cached_at)                                      # second view reused the results
             self.client.get('/reports?refresh=1')
-            self.assertGreater(self.appmod._report_cache['at'], cached_at)               # Refresh recalculated them
+            self.assertGreater(cache['at'], cached_at)                                    # Refresh recalculated them
         finally:
-            self.appmod.REPORT_CACHE_SECONDS = 0
+            config['REPORT_CACHE_SECONDS'] = 0
 
     def test_report_timing_script_runs(self):
         out = subprocess.run([sys.executable, os.path.join(ROOT, 'scripts', 'report_timings.py'), '--runs', '1'], capture_output=True,
                              text=True, env=dict(os.environ, DB_NAME=TEST_DB), check=True).stdout
-        self.assertIn('All 12 reports together', out)
+        self.assertIn('All 13 reports together', out)
         self.assertIn('Running revenue per route', out)
 
 
@@ -968,6 +1011,189 @@ class ReportTests(Base):
         self.login()
         html = self.client.get('/').get_data(as_text=True)
         self.assertIn('Tickets sold', html)
+
+class SeatMapTests(Base):
+    """Every vehicle has a seat map; a ticket must name a real seat; the map follows capacity and layout changes."""
+
+    def setUp(self):
+        super().setUp()
+        self.login('admin')
+
+    def vehicle(self, number, capacity, per_row=4):
+        self.post('/vehicles/add', vehicle_no=number, type='Bus', capacity=capacity, seats_per_row=per_row, status='Active')
+        return self.appmod.query('SELECT VehicleID v FROM Vehicle WHERE VehicleNo = %s', (number,))[0]['v']
+
+    def seats(self, vid):
+        return [r['SeatNo'] for r in self.appmod.query('SELECT SeatNo FROM Seat WHERE VehicleID = %s ORDER BY LENGTH(SeatNo), SeatNo', (vid,))]
+
+    def test_every_vehicle_has_exactly_its_capacity_in_seats(self):
+        self.assertEqual(self.appmod.query('SELECT COUNT(*) n FROM Vehicle V WHERE Capacity <> '
+                                           '(SELECT COUNT(*) FROM Seat ST WHERE ST.VehicleID = V.VehicleID)')[0]['n'], 0)
+        row1 = self.appmod.query("SELECT SeatNo, Position FROM Seat WHERE VehicleID = 4 AND SeatNo LIKE '1_' ORDER BY SeatNo")
+        self.assertEqual([(r['SeatNo'], r['Position']) for r in row1],                  # a six-across metro car
+                         [('1A', 'Window'), ('1B', 'Middle'), ('1C', 'Aisle'), ('1D', 'Aisle'), ('1E', 'Middle'), ('1F', 'Window')])
+        self.assertEqual(self.seats(self.vehicle('KA-00-SM1', 6, 4)), ['1A', '1B', '1C', '1D', '2A', '2B'])
+
+    def test_a_ticket_must_name_a_seat_of_the_vehicle(self):
+        self.assertIn('No such seat on this vehicle', self.post('/book', p_id=1, s_id=2, seat='13A', fare=''))   # 45 seats: 12A is the last
+        self.assertIn('No such seat on this vehicle', self.post('/book', p_id=1, s_id=8, seat='1D', fare=''))    # three across: no D
+        self.assertIn('No such seat on this vehicle', self.post('/book', p_id=1, s_id=2, seat='A1', fare=''))    # not a seat-map label
+        self.assertIn('Ticket booked', self.post('/book', p_id=1, s_id=2, seat='12A', fare=''))
+
+    def test_seat_map_api_marks_taken_seats(self):
+        x = self.client.get(f'/api/seats?s=1&d={date.today().isoformat()}').get_json()
+        self.assertEqual((x['capacity'], x['per_row'], len(x['seats'])), (40, 4, 40))
+        taken = {s['no'] for s in x['seats'] if s['taken']}
+        self.assertTrue({'1A', '1B', '2A', '3A'} <= taken)                              # the seed bookings
+        self.assertEqual(x['left'], 40 - len(taken))
+
+    def test_resizing_rebuilds_the_map_but_never_drops_a_booked_seat(self):
+        vid = self.vehicle('KA-00-SM2', 8)
+        self.post('/schedules/add', route_id=1, vehicle_id=vid, departure='00:10', arrival='00:40')
+        sid = self.appmod.query('SELECT MAX(ScheduleID) m FROM Schedule')[0]['m']
+        self.assertIn('Ticket booked', self.post('/book', p_id=2, s_id=sid, seat='2D', fare=''))
+        edit = dict(vehicle_no='KA-00-SM2', type='Bus', model='', status='Active', driver_id='')
+        self.assertIn('would disappear', self.post(f'/vehicles/{vid}/edit', capacity=6, seats_per_row=4, **edit))      # 2D is booked
+        self.assertIn('would disappear', self.post(f'/vehicles/{vid}/edit', capacity=8, seats_per_row=2, **edit))      # two across: no D
+        self.assertEqual(len(self.seats(vid)), 8)                                        # the whole UPDATE was undone
+        self.assertIn('Vehicle updated', self.post(f'/vehicles/{vid}/edit', capacity=12, seats_per_row=4, **edit))
+        self.assertEqual(self.seats(vid)[-1], '3D')
+
+    def test_seats_disappear_with_their_vehicle(self):
+        vid = self.vehicle('KA-00-SM3', 5)
+        self.post(f'/vehicles/{vid}/delete')
+        self.assertEqual(self.seats(vid), [])                                            # ON DELETE CASCADE
+
+    def test_seat_position_report_adds_up(self):
+        r = next(x for x in self.appmod.REPORTS if x['title'].startswith('Window, aisle'))
+        rows = self.appmod.query(r['sql'])
+        self.assertEqual({x['Position'] for x in rows} <= {'Window', 'Aisle', 'Middle'}, True)
+        self.assertAlmostEqual(sum(float(x['SharePct']) for x in rows), 100, delta=0.3)
+        self.assertEqual(sum(x['Tickets'] for x in rows), self.appmod.query('SELECT COUNT(*) n FROM Ticket')[0]['n'])
+
+
+class ServiceCalendarTests(Base):
+    """Departures run on their service days only; some do not run on public holidays."""
+
+    def setUp(self):
+        super().setUp()
+        self.login('admin')
+
+    def next_day(self, weekday, after=1):
+        """The next date with this weekday (0 = Monday) that is not already a public holiday."""
+        holidays = {r['HolidayDate'] for r in self.appmod.query('SELECT HolidayDate FROM Holiday')}
+        d = date.today() + timedelta(days=after)
+        while d.weekday() != weekday or d in holidays:
+            d += timedelta(days=1)
+        return d
+
+    def book(self, schedule, seat, day):
+        return self.post('/book', p_id=4, s_id=schedule, seat=seat, fare='', travel_date=day.isoformat())
+
+    def test_weekday_service_is_not_sold_for_a_weekend(self):
+        saturday, monday = self.next_day(5), self.next_day(0)
+        self.assertIn('does not run on that date', self.book(11, '1A', saturday))      # 11 runs Monday to Friday
+        self.assertIn('Ticket booked', self.book(11, '1A', monday))
+        self.assertIn('Ticket booked', self.book(12, '1A', saturday))                  # 12 runs only at weekends
+        self.assertIn('does not run on that date', self.book(12, '1B', monday))
+
+    def test_public_holiday_stops_only_the_services_that_skip_holidays(self):
+        tuesday = self.next_day(1)
+        try:
+            self.assertIn('added as a public holiday', self.post('/holidays/add', holiday_date=tuesday.isoformat(), name='Test Day'))
+            self.assertIn('does not run on that date', self.book(11, '2A', tuesday))   # weekday service, not on holidays
+            self.assertIn('Ticket booked', self.book(2, '11A', tuesday))                # a daily service runs on holidays too
+            api = self.client.get(f'/api/seats?s=11&d={tuesday.isoformat()}').get_json()
+            self.assertFalse(api['runs'])
+        finally:
+            self.post(f'/holidays/{tuesday.isoformat()}/delete')
+        self.assertIn('Ticket booked', self.book(11, '2A', tuesday))
+
+    def test_runs_on_function_and_view_agree_with_the_calendar(self):
+        today = date.today()
+        expected = {11: today.weekday() < 5, 12: today.weekday() >= 5}
+        holiday = self.appmod.query('SELECT COUNT(*) n FROM Holiday WHERE HolidayDate = CURDATE()')[0]['n'] > 0
+        expected[11] = expected[11] and not holiday
+        rows = {r['ScheduleID']: bool(r['RunsToday']) for r in self.appmod.query('SELECT ScheduleID, RunsToday FROM ScheduleOccupancy WHERE ScheduleID IN (11, 12)')}
+        self.assertEqual(rows, expected)
+        self.assertIsNone(self.appmod.query('SELECT RunsOn(999999, CURDATE()) r')[0]['r'])
+
+    def test_schedule_form_stores_service_days(self):
+        self.post('/vehicles/add', vehicle_no='KA-00-SVC', type='Bus', capacity=10, status='Active')
+        vid = self.appmod.query("SELECT VehicleID v FROM Vehicle WHERE VehicleNo = 'KA-00-SVC'")[0]['v']
+        self.assertIn('Schedule added', self.post('/schedules/add', route_id=2, vehicle_id=vid, departure='21:00', arrival='21:40', days=['Sat', 'Sun']))
+        row = self.appmod.query('SELECT ServiceDays, RunsOnHolidays FROM Schedule WHERE VehicleID = %s', (vid,))[0]
+        self.assertEqual((row['ServiceDays'], row['RunsOnHolidays']), ({'Sat', 'Sun'}, 0))
+        self.assertIn('Weekends', self.client.get('/routes?q=KA-00-SVC').get_data(as_text=True))
+
+    def test_holidays_are_admin_only_and_validated(self):
+        self.assertIn('valid date', self.post('/holidays/add', holiday_date='not-a-date', name='X'))
+        self.assertIn('Duplicate', self.post('/holidays/add', holiday_date='2026-12-25', name='Christmas again'))
+        self.client = self.appmod.app.test_client()
+        self.client.post('/login', data={'username': 'staff', 'password': 'staff123', 'csrf_token': self.token()})
+        self.assertIn('not allowed', self.post('/holidays/add', holiday_date='2027-03-01', name='Nope'))
+
+
+class SearchTests(Base):
+    """The search boxes use the FULLTEXT and B-tree indexes instead of scanning with LIKE '%...%'."""
+
+    def setUp(self):
+        super().setUp()
+        self.login('admin')
+
+    def test_passenger_search_by_word_email_phone_and_number(self):
+        for q in ('Thanu', 'thanu@gmail.com', 'sanv', '9000000001'):
+            html = self.client.get('/passengers', query_string={'q': q}).get_data(as_text=True)
+            self.assertTrue('B M Thanu Sri' in html or 'Sanvi S' in html, q)
+        self.assertIn('Akash V', self.client.get('/passengers?q=3').get_data(as_text=True))   # passenger number 3
+
+    def test_booking_search_by_route_seat_vehicle_and_ticket(self):
+        def routes(q):                                                                   # the Route column of the result table
+            html = self.client.get('/bookings', query_string={'q': q}).get_data(as_text=True)
+            return set(re.findall(r'<td class="fw-semibold">[^<]*</td><td>([^<]+)</td>', html))
+        self.assertEqual(routes('Purple'), {'Purple Line'})                              # a route word
+        self.assertEqual(routes('kempegowda'), {'Route 335E'})                           # a destination word
+        self.assertTrue({'Route 201', 'Route 500', 'Purple Line'} <= routes('thanu'))    # a passenger word: her seed tickets
+        html = self.client.get('/bookings?q=thanu').get_data(as_text=True)
+        self.assertEqual(set(re.findall(r'<td class="fw-semibold">([^<]+)</td>', html)), {'B M Thanu Sri'})
+        self.assertIn('KA-51-M-1002', self.client.get('/bookings?q=KA-51-M-1002').get_data(as_text=True))
+        seats = re.findall(r'pill pill-blue">([^<]+)<', self.client.get('/bookings?q=1c').get_data(as_text=True))
+        self.assertTrue(seats and set(seats) == {'1C'}, seats)
+
+    def test_schedule_search_by_route_word(self):
+        html = self.client.get('/routes?q=airport').get_data(as_text=True)
+        self.assertIn('Route 335E', html)
+
+    def test_the_plans_use_the_indexes(self):
+        def plan(sql, args=()):
+            return self.appmod.query('EXPLAIN FORMAT=TRADITIONAL ' + sql, args)
+        ft = plan('SELECT * FROM Passenger WHERE MATCH(Name, Email) AGAINST (%s IN BOOLEAN MODE)', ('+thanu*',))[0]
+        self.assertEqual((ft['type'], ft['key']), ('fulltext', 'ft_passenger'))
+        scan = plan("SELECT * FROM Passenger WHERE Name LIKE '%thanu%'")[0]
+        self.assertEqual(scan['type'], 'ALL')                                            # what the FULLTEXT index avoids
+        phone = plan("SELECT * FROM Passenger WHERE Phone LIKE '90000%'")[0]
+        self.assertIn('idx_passenger_phone', phone['possible_keys'])                     # (a 13-row table is cheaper to scan)
+
+    def test_search_terms_are_built_safely(self):
+        from routewise.search import boolean_query, prefix
+        self.assertEqual(boolean_query('Ravi  kum'), '+Ravi* +kum*')
+        self.assertEqual(boolean_query('a@b.com'), None)                                 # nothing searchable: falls back to LIKE
+        self.assertEqual(boolean_query('x" -y +z (w) ~the'), None)                       # operators never reach MATCH
+        self.assertEqual(prefix('50%_'), '50\\%\\_%')
+        for q in ('"unbalanced', '+++', '*', 'O\'Brien'):
+            self.assertEqual(self.client.get('/passengers', query_string={'q': q}).status_code, 200, q)
+
+
+class EventTests(Base):
+    def test_old_sign_in_failures_are_purged_by_a_scheduled_event(self):
+        out = mysql(f"SELECT CONCAT_WS('|', EVENT_NAME, INTERVAL_VALUE, INTERVAL_FIELD, STATUS) FROM information_schema.events "
+                    f"WHERE EVENT_SCHEMA = '{TEST_DB}'").stdout                         # (the application user cannot even see events)
+        self.assertIn('PurgeLoginAttempts|1|HOUR|ENABLED', out)
+        self.appmod.execute("INSERT INTO LoginAttempt VALUES ('old', '1.2.3.4', 3, NOW() - INTERVAL 2 DAY), ('new', '1.2.3.4', 3, NOW())")
+        body = mysql(f"SELECT EVENT_DEFINITION FROM information_schema.events WHERE EVENT_SCHEMA = '{TEST_DB}'").stdout.splitlines()[-1]
+        mysql(f'USE {TEST_DB}; {body}')                                                  # run exactly what the event runs every hour
+        left = [r['Username'] for r in self.appmod.query("SELECT Username FROM LoginAttempt WHERE Address = '1.2.3.4'")]
+        self.assertEqual(left, ['new'])
 
 
 if __name__ == '__main__':

@@ -4,9 +4,10 @@
 <style>main.container { max-width: none; padding: 0; } footer { display: none; }</style>
 <div class="login-wrap">
     <div class="card login-card shadow-lg">
-        <div class="login-logo"><i class="bi bi-bus-front-fill"></i></div>
-        <h1 class="h4 text-center mb-1">TransitIQ</h1>
-        <p class="text-center text-muted small mb-3">Smart Public Transport Management</p>
+        {% from '_logo.html' import logo %}
+        <div class="text-center mb-2">{{ logo(56) }}</div>
+        <h1 class="h4 text-center mb-1 brand-word">Route<b>Wise</b></h1>
+        <p class="text-center text-muted small mb-3">Public transport, planned seat by seat</p>
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% for category, message in messages %}<div class="alert alert-{{ category }} py-2 small">{{ message }}</div>{% endfor %}
         {% endwith %}

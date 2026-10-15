@@ -6,8 +6,10 @@
 What it adds (at --scale 1): 30 routes, 66 drivers, 66 vehicles, about 600 departures, 3,000 passengers,
 about 25,000 tickets (two travel dates per departure over the last 30 days), and about 1,500 feedback entries.
 
-Every row goes through the application's own database user (transitiq_app), so it passes the same constraints and
-triggers as real use: no double seats, no overbooked vehicles, no overlapping runs, an audit row for every ticket.
+Every row goes through the application's own database user (routewise_app), so it passes the same constraints and
+triggers as real use: seats from each vehicle's seat map, no double seats, no overbooked vehicles, no overlapping runs,
+no trips on days a departure does not run, and an audit row for every ticket. About one departure in eight is a
+weekday-only service that does not run on public holidays.
 The data is deterministic (fixed random seed) and the script does nothing if the data is already loaded.
 Connection settings: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME (same defaults as the application).
 """
@@ -39,8 +41,8 @@ COMMENTS = {5: ['Clean, on time and comfortable.', 'Excellent service, will use 
 
 def connect():
     return mysql.connector.connect(
-        host=os.environ.get('DB_HOST', 'localhost'), user=os.environ.get('DB_USER', 'transitiq_app'),
-        password=os.environ.get('DB_PASSWORD', 'transitiq_app_pw'), database=os.environ.get('DB_NAME', 'public_transport'))
+        host=os.environ.get('DB_HOST', 'localhost'), user=os.environ.get('DB_USER', 'routewise_app'),
+        password=os.environ.get('DB_PASSWORD', 'routewise_app_pw'), database=os.environ.get('DB_NAME', 'public_transport'))
 
 
 def weighted(rng, pairs):
@@ -52,8 +54,9 @@ def weighted(rng, pairs):
     return pairs[-1][0]
 
 
-def seat_labels(capacity):
-    return [f'S{i}' for i in range(1, capacity + 1)]
+def seat_labels(capacity, per_row):
+    """The labels of a vehicle's seat map (the same rule as the GenerateSeats procedure): 1A, 1B, ... row by row."""
+    return [f'{i // per_row + 1}{"ABCDEF"[i % per_row]}' for i in range(capacity)]
 
 
 def main():
@@ -98,20 +101,21 @@ def main():
         cur.execute('INSERT INTO Driver (Name, LicenseNo, ShiftHours, Phone) VALUES (%s,%s,%s,%s)',
                     (name, f'KA-01-D{i + 1:05d}', rng.randint(6, 10), f'98{rng.randint(10000000, 99999999)}'))
         driver_ids.append(cur.lastrowid)
-    vehicles = []                                         # (VehicleID, Type, Capacity, Status)
+    vehicles = []                                         # (VehicleID, Type, Capacity, Status, SeatsPerRow)
     for i in range(n_vehicles):
         vtype = 'Metro' if i % 4 == 3 else 'Bus'
         cap = rng.randint(90, 140) if vtype == 'Metro' else rng.randint(35, 50)
         status = weighted(rng, [('Active', 0.92), ('Maintenance', 0.05), ('Retired', 0.03)])
         model = rng.choice(METRO_MODELS if vtype == 'Metro' else BUS_MODELS)
-        cur.execute('INSERT INTO Vehicle (VehicleNo, Type, Capacity, Model, Status, DriverID) VALUES (%s,%s,%s,%s,%s,%s)',
-                    (f'KA-02-{"M" if vtype == "Metro" else "F"}-{2000 + i}', vtype, cap, model, status, driver_ids[i]))
-        vehicles.append((cur.lastrowid, vtype, cap, status))
+        per_row = 6 if vtype == 'Metro' else 4
+        cur.execute('INSERT INTO Vehicle (VehicleNo, Type, Capacity, SeatsPerRow, Model, Status, DriverID) VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                    (f'KA-02-{"M" if vtype == "Metro" else "F"}-{2000 + i}', vtype, cap, per_row, model, status, driver_ids[i]))
+        vehicles.append((cur.lastrowid, vtype, cap, status, per_row))
     conn.commit()
 
     # ---- schedules: back-to-back runs for every active vehicle, 05:00 to about 22:30 -------------
-    schedules = []                                        # (ScheduleID, RouteID, VehicleID, Departure(min), Capacity)
-    for vid, vtype, cap, status in vehicles:
+    schedules = []                                        # (ScheduleID, RouteID, VehicleID, Departure(min), Capacity, SeatsPerRow, weekdays only)
+    for vid, vtype, cap, status, per_row in vehicles:
         if status != 'Active':
             continue
         my_routes = [r for r in routes if r[1] == vtype]
@@ -122,9 +126,12 @@ def main():
             if clock + minutes > 22 * 60 + 30:
                 break
             dep, arr = clock, clock + minutes
-            cur.execute('INSERT INTO Schedule (RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency) VALUES (%s,%s,%s,%s,%s)',
-                        (rid, vid, f'{dep // 60:02d}:{dep % 60:02d}:00', f'{arr // 60:02d}:{arr % 60:02d}:00', rng.choice([10, 15, 20, 30, 60])))
-            schedules.append((cur.lastrowid, rid, vid, dep, cap))
+            weekdays_only = rng.random() < 0.125
+            cur.execute('INSERT INTO Schedule (RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency, ServiceDays, RunsOnHolidays) '
+                        'VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                        (rid, vid, f'{dep // 60:02d}:{dep % 60:02d}:00', f'{arr // 60:02d}:{arr % 60:02d}:00', rng.choice([10, 15, 20, 30, 60]),
+                         'Mon,Tue,Wed,Thu,Fri' if weekdays_only else 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', not weekdays_only))
+            schedules.append((cur.lastrowid, rid, vid, dep, cap, per_row, weekdays_only))
             clock = arr + rng.randint(15, 35)
     conn.commit()
 
@@ -144,16 +151,20 @@ def main():
     #      A ticket is booked 0 to 3 days before it is used. Every row passes the constraints and triggers. ----
     now = datetime.now()
     today = now.date()
+    cur.execute('SELECT HolidayDate FROM Holiday')
+    holidays = {row[0] for row in cur.fetchall()}
     tickets = failed = 0
-    for sid, rid, vid, dep, cap in schedules:
+    for sid, rid, vid, dep, cap, per_row, weekdays_only in schedules:
         hour = dep // 60
         peak = 0.85 if 7 <= hour <= 10 or 17 <= hour <= 20 else 0.55
-        for day_offset in rng.sample(range(0, 30), 2):                       # two travel dates for this departure
-            travel = today - timedelta(days=day_offset)
+        days = [today - timedelta(days=d) for d in range(30)]
+        if weekdays_only:                                                     # only the days this service runs
+            days = [d for d in days if d.weekday() < 5 and d not in holidays]
+        for travel in rng.sample(days, 2):                                    # two travel dates for this departure
             fill = min(max(rng.gauss(peak, 0.15), 0.1), 0.98) * 0.5
             n = max(int(cap * fill), 1)
             riders = rng.sample(passengers, min(n, len(passengers)))
-            seats = rng.sample(seat_labels(cap), len(riders))
+            seats = rng.sample(seat_labels(cap, per_row), len(riders))
             rows = []
             for p, seat in zip(riders, seats):
                 booked = datetime.combine(travel, datetime.min.time()) - timedelta(days=rng.randint(0, 3)) + timedelta(minutes=rng.randint(0, 1439))

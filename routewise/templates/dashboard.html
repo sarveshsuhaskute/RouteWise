@@ -9,10 +9,16 @@
     <a href="{{ url_for('bookings') }}" class="btn btn-brand w-staff"><i class="bi bi-plus-lg me-1"></i>New booking</a>
 </div>
 
+<div class="today-strip mb-3">
+    <span><i class="bi bi-calendar-check me-1"></i><b>{{ stats.running_today }}</b> of {{ stats.departures }} departures run today</span>
+    {% if stats.holiday_today %}<span class="pill pill-amber"><i class="bi bi-flag me-1"></i>Public holiday: {{ stats.holiday_today }}</span>{% endif %}
+    {% if next_holiday and not stats.holiday_today %}<span class="text-muted">Next public holiday: {{ next_holiday.Name }}, {{ next_holiday.HolidayDate | fmt }}</span>{% endif %}
+</div>
+
 <div class="row g-3 mb-3">
     <div class="col-6 col-lg-3"><div class="card stat-card">
         <div class="stat-icon bg-g1"><i class="bi bi-ticket-perforated"></i></div>
-        <div><div class="stat-value">{{ stats.tickets }}</div><div class="stat-label">Tickets sold</div></div>
+        <div><div class="stat-value">{{ '{:,}'.format(stats.tickets) }}</div><div class="stat-label">Tickets sold</div></div>
     </div></div>
     <div class="col-6 col-lg-3"><div class="card stat-card">
         <div class="stat-icon bg-g2"><i class="bi bi-currency-rupee"></i></div>
@@ -20,7 +26,7 @@
     </div></div>
     <div class="col-6 col-lg-3"><div class="card stat-card">
         <div class="stat-icon bg-g4"><i class="bi bi-people"></i></div>
-        <div><div class="stat-value">{{ stats.passengers }}</div><div class="stat-label">Registered passengers</div></div>
+        <div><div class="stat-value">{{ '{:,}'.format(stats.passengers) }}</div><div class="stat-label">Registered passengers</div></div>
     </div></div>
     <div class="col-6 col-lg-3"><div class="card stat-card">
         <div class="stat-icon bg-g3"><i class="bi bi-bus-front"></i></div>
@@ -78,9 +84,9 @@
     new Chart(document.getElementById('revChart'), {
         type: 'bar',
         data: { labels: rev.labels, datasets: [{ label: 'Revenue (₹)', data: rev.values,
-            backgroundColor: ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ec4899'], borderRadius: 8 }] },
+            backgroundColor: '#0f766e', hoverBackgroundColor: '#f59e0b', borderRadius: 6, maxBarThickness: 48 }] },
         options: { maintainAspectRatio: false, plugins: { legend: { display: false } },
-                   scales: { y: { beginAtZero: true, grid: { color: '#e2e8f0' } }, x: { grid: { display: false } } } }
+                   scales: { y: { beginAtZero: true, grid: { color: '#e5e7eb' } }, x: { grid: { display: false } } } }
     });
 </script>
 {% endblock %}

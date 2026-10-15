@@ -1,9 +1,9 @@
 -- =====================================================================
---  Public Transportation Optimization System  -  MySQL 8+ schema (version 2)
+--  RouteWise - Public Transport Management System  -  MySQL 8+ schema (version 3)
 --  Import in MySQL Workbench, or:  mysql -u root -p < schema.sql
 --  The script is re-runnable: tables use IF NOT EXISTS, programmable
 --  objects are dropped and recreated, seed data is only added once.
---  Upgrading an existing version-1 database without losing data: scripts/migrate.py
+--  Upgrading an existing version-1 or version-2 database without losing data: scripts/migrate.py
 --
 --  Functional dependencies (every relation is in BCNF: each determinant is a candidate key)
 --    FareRule   : RouteType -> all     CardDiscount: CardType -> all
@@ -11,11 +11,13 @@
 --    Driver     : DriverID -> all;     LicenseNo -> all
 --    Route      : RouteID -> all
 --    Vehicle    : VehicleID -> all;    VehicleNo -> all
+--    Seat       : (VehicleID, SeatNo) -> Position      (the position depends on the vehicle's layout)
 --    Schedule   : ScheduleID -> all;   (VehicleID, DepartureTime) -> all
+--    Holiday    : HolidayDate -> Name
 --    Ticket     : TicketID -> all;     (ScheduleID, TravelDate, SeatNo) -> all
 --    Feedback   : FeedbackID -> all
 --    TicketAudit: AuditID -> all       AppUser: UserID -> all;  Username -> all
---    SchemaVersion: Version -> all
+--    LoginAttempt: (Username, Address) -> all            SchemaVersion: Version -> all
 -- =====================================================================
 -- every script declares its character set, so the result does not depend on the client that runs it
 SET NAMES utf8mb4;
@@ -71,30 +73,64 @@ CREATE TABLE IF NOT EXISTS Route (
 );
 
 CREATE TABLE IF NOT EXISTS Vehicle (
-    VehicleID INT AUTO_INCREMENT PRIMARY KEY,
-    VehicleNo VARCHAR(20) NOT NULL UNIQUE,
-    Type      VARCHAR(20) NOT NULL,
-    Capacity  INT NOT NULL,
-    Model     VARCHAR(50),
-    Status    VARCHAR(20) NOT NULL DEFAULT 'Active',
-    DriverID  INT NULL,
-    CONSTRAINT chk_capacity CHECK (Capacity > 0),
+    VehicleID   INT AUTO_INCREMENT PRIMARY KEY,
+    VehicleNo   VARCHAR(20) NOT NULL UNIQUE,
+    Type        VARCHAR(20) NOT NULL,
+    Capacity    INT NOT NULL,
+    SeatsPerRow INT NOT NULL DEFAULT 4,
+    Model       VARCHAR(50),
+    Status      VARCHAR(20) NOT NULL DEFAULT 'Active',
+    DriverID    INT NULL,
+    CONSTRAINT chk_capacity CHECK (Capacity BETWEEN 1 AND 600),
+    CONSTRAINT chk_seats_per_row CHECK (SeatsPerRow BETWEEN 2 AND 6),
     CONSTRAINT chk_vstatus  CHECK (Status IN ('Active', 'Maintenance', 'Retired')),
     FOREIGN KEY (DriverID) REFERENCES Driver(DriverID) ON DELETE SET NULL,
     CONSTRAINT fk_vehicle_type FOREIGN KEY (Type) REFERENCES FareRule(RouteType)
 );
 
 CREATE TABLE IF NOT EXISTS Schedule (
-    ScheduleID    INT AUTO_INCREMENT PRIMARY KEY,
-    RouteID       INT  NOT NULL,
-    VehicleID     INT  NOT NULL,
-    DepartureTime TIME NOT NULL,
-    ArrivalTime   TIME NOT NULL,
-    Frequency     INT,
+    ScheduleID     INT AUTO_INCREMENT PRIMARY KEY,
+    RouteID        INT  NOT NULL,
+    VehicleID      INT  NOT NULL,
+    DepartureTime  TIME NOT NULL,
+    ArrivalTime    TIME NOT NULL,
+    Frequency      INT,
+    ServiceDays    SET('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun') NOT NULL DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun',
+    RunsOnHolidays BOOLEAN NOT NULL DEFAULT TRUE,
     CONSTRAINT chk_times CHECK (ArrivalTime > DepartureTime),
+    CONSTRAINT chk_service_days CHECK (ServiceDays <> ''),
     FOREIGN KEY (RouteID)   REFERENCES Route(RouteID),
     FOREIGN KEY (VehicleID) REFERENCES Vehicle(VehicleID)
 );
+
+-- [v3 tables] (migrations/make_0003.py copies the definitions between these markers into the upgrade)
+-- The seat map: one row per physical seat, generated from the vehicle's capacity and seats per row by the
+-- CreateSeats / ResizeSeats triggers. Seats are labelled row + letter (1A, 1B, ... 12D); a ticket must name one of them.
+CREATE TABLE IF NOT EXISTS Seat (
+    VehicleID INT         NOT NULL,
+    SeatNo    VARCHAR(10) NOT NULL,
+    Position  VARCHAR(6)  NOT NULL,
+    PRIMARY KEY (VehicleID, SeatNo),
+    CONSTRAINT chk_position CHECK (Position IN ('Window', 'Middle', 'Aisle')),
+    CONSTRAINT fk_seat_vehicle FOREIGN KEY (VehicleID) REFERENCES Vehicle(VehicleID) ON DELETE CASCADE
+);
+
+-- Public holidays: departures with RunsOnHolidays = FALSE do not run (and cannot be booked) on these dates.
+CREATE TABLE IF NOT EXISTS Holiday (
+    HolidayDate DATE PRIMARY KEY,
+    Name        VARCHAR(100) NOT NULL
+);
+
+-- Failed sign-ins per username and address: the lock-out survives restarts and is shared by every server process.
+CREATE TABLE IF NOT EXISTS LoginAttempt (
+    Username     VARCHAR(50) NOT NULL,
+    Address      VARCHAR(45) NOT NULL,
+    Failures     INT         NOT NULL,
+    FirstFailure DATETIME    NOT NULL,
+    PRIMARY KEY (Username, Address),
+    CONSTRAINT chk_failures CHECK (Failures > 0)
+);
+-- [end v3 tables]
 
 -- A seat belongs to a TRIP: a schedule on a travel date. The same bus, time and seat can be sold again on another day.
 CREATE TABLE IF NOT EXISTS Ticket (
@@ -106,7 +142,7 @@ CREATE TABLE IF NOT EXISTS Ticket (
     Fare        DECIMAL(6,2) NOT NULL,
     BookingDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_fare   CHECK (Fare > 0),
-    CONSTRAINT chk_seat   CHECK (SeatNo REGEXP '^[A-Za-z0-9]{1,6}$'),
+    CONSTRAINT chk_seat   CHECK (SeatNo REGEXP '^[1-9][0-9]{0,2}[A-F]$'),
     CONSTRAINT chk_travel CHECK (TravelDate >= DATE(BookingDate) AND TravelDate <= DATE(BookingDate) + INTERVAL 30 DAY),
     UNIQUE KEY uq_trip_seat (ScheduleID, TravelDate, SeatNo),   -- race-proof seat uniqueness per trip
     FOREIGN KEY (PassengerID) REFERENCES Passenger(PassengerID),
@@ -159,29 +195,89 @@ CREATE TABLE IF NOT EXISTS SchemaVersion (
 );
 
 -- ---------------------------------------------------------------------
---  2. INDEXES (speed up the joins / lookups used by the app)
+--  2. INDEXES (speed up the joins / lookups / searches used by the app)
 -- ---------------------------------------------------------------------
--- (re-run safe: an index is only created when it does not exist yet)
+-- (re-run safe: an index is only created when it does not exist yet; names starting ft_ are FULLTEXT indexes)
 DROP PROCEDURE IF EXISTS _add_index;
 DELIMITER $$
 CREATE PROCEDURE _add_index(IN p_table VARCHAR(64), IN p_index VARCHAR(64), IN p_cols VARCHAR(128))
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.statistics
                    WHERE table_schema = DATABASE() AND table_name = p_table AND index_name = p_index) THEN
-        SET @s = CONCAT('CREATE INDEX ', p_index, ' ON ', p_table, ' (', p_cols, ')');
+        SET @s = CONCAT('CREATE ', IF(LEFT(p_index, 3) = 'ft_', 'FULLTEXT ', ''), 'INDEX ', p_index, ' ON ', p_table, ' (', p_cols, ')');
         PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
     END IF;
 END$$
 DELIMITER ;
-CALL _add_index('Ticket',   'idx_ticket_passenger', 'PassengerID');
-CALL _add_index('Ticket',   'idx_ticket_date',      'TravelDate');
-CALL _add_index('Schedule', 'idx_schedule_route',   'RouteID');
-CALL _add_index('Schedule', 'idx_schedule_vehicle', 'VehicleID');
-CALL _add_index('Feedback', 'idx_feedback_route',   'RouteID');
+CALL _add_index('Ticket',    'idx_ticket_passenger', 'PassengerID');
+CALL _add_index('Ticket',    'idx_ticket_date',      'TravelDate');
+CALL _add_index('Schedule',  'idx_schedule_route',   'RouteID');
+CALL _add_index('Schedule',  'idx_schedule_vehicle', 'VehicleID');
+CALL _add_index('Feedback',  'idx_feedback_route',   'RouteID');
+CALL _add_index('Passenger', 'idx_passenger_phone',  'Phone');
+-- word search: LIKE '%x%' cannot use an index and reads every row; a FULLTEXT index finds the words directly
+CALL _add_index('Passenger', 'ft_passenger', 'Name, Email');
+CALL _add_index('Route',     'ft_route',     'RouteName, Origin, Destination');
 DROP PROCEDURE _add_index;
 
 -- ---------------------------------------------------------------------
---  3. VIEWS
+--  3. FUNCTIONS (defined before the views, which use RunsOn)
+-- ---------------------------------------------------------------------
+DROP FUNCTION IF EXISTS SeatsLeft;
+DELIMITER $$
+CREATE FUNCTION SeatsLeft(p_schedule INT, p_date DATE) RETURNS INT
+READS SQL DATA
+BEGIN
+    RETURN (SELECT V.Capacity FROM Schedule S JOIN Vehicle V ON S.VehicleID = V.VehicleID
+            WHERE S.ScheduleID = p_schedule)
+         - (SELECT COUNT(*) FROM Ticket WHERE ScheduleID = p_schedule AND TravelDate = p_date);
+END$$
+DELIMITER ;
+
+-- Fare = max(MinFare, distance x RatePerKm) minus the travel-card discount; the rates come from FareRule and CardDiscount.
+DROP FUNCTION IF EXISTS CalcFare;
+DELIMITER $$
+CREATE FUNCTION CalcFare(p_passenger INT, p_schedule INT) RETURNS DECIMAL(6,2)
+READS SQL DATA
+BEGIN
+    DECLARE v_dist DECIMAL(5,2);
+    DECLARE v_type VARCHAR(20);
+    DECLARE v_card VARCHAR(20);
+    DECLARE v_rate DECIMAL(5,2);
+    DECLARE v_min  DECIMAL(6,2);
+    DECLARE v_pct  INT;
+    DECLARE v_base DECIMAL(8,2);
+    SELECT R.Distance, R.Type INTO v_dist, v_type
+    FROM Schedule S JOIN Route R ON S.RouteID = R.RouteID WHERE S.ScheduleID = p_schedule;
+    SELECT CardType INTO v_card FROM Passenger WHERE PassengerID = p_passenger;
+    IF v_type IS NULL OR v_card IS NULL THEN
+        RETURN NULL;
+    END IF;
+    SELECT RatePerKm, MinFare INTO v_rate, v_min FROM FareRule WHERE RouteType = v_type;
+    SELECT DiscountPct INTO v_pct FROM CardDiscount WHERE CardType = v_card;
+    IF v_rate IS NULL OR v_pct IS NULL THEN
+        RETURN NULL;
+    END IF;
+    SET v_base = GREATEST(v_min, ROUND(COALESCE(v_dist, 10) * v_rate, 2));
+    RETURN ROUND(v_base * (100 - v_pct) / 100, 2);
+END$$
+DELIMITER ;
+
+-- Does a departure run on a date? Its service days must include the weekday, and on a public holiday
+-- it runs only when RunsOnHolidays is set. NULL for an unknown schedule.
+DROP FUNCTION IF EXISTS RunsOn;
+DELIMITER $$
+CREATE FUNCTION RunsOn(p_schedule INT, p_date DATE) RETURNS BOOLEAN
+READS SQL DATA
+BEGIN
+    RETURN (SELECT FIND_IN_SET(ELT(DAYOFWEEK(p_date), 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'), ServiceDays) > 0
+                   AND (RunsOnHolidays OR NOT EXISTS (SELECT 1 FROM Holiday WHERE HolidayDate = p_date))
+            FROM Schedule WHERE ScheduleID = p_schedule);
+END$$
+DELIMITER ;
+
+-- ---------------------------------------------------------------------
+--  4. VIEWS
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW BookingSummary AS
 SELECT T.TicketID, P.Name AS PassengerName, R.RouteName, V.VehicleNo,
@@ -192,10 +288,11 @@ JOIN Schedule  S ON T.ScheduleID  = S.ScheduleID
 JOIN Route     R ON S.RouteID     = R.RouteID
 JOIN Vehicle   V ON S.VehicleID   = V.VehicleID;
 
--- Occupancy of every departure TODAY (what a clerk needs when selling a ticket).
+-- Occupancy of every departure TODAY (what a clerk needs when selling a ticket), and whether it runs today.
 CREATE OR REPLACE VIEW ScheduleOccupancy AS
 SELECT S.ScheduleID, R.RouteName, V.VehicleNo, V.Status AS VehicleStatus,
-       S.DepartureTime, CURDATE() AS TravelDate, V.Capacity,
+       S.DepartureTime, S.ServiceDays, S.RunsOnHolidays, RunsOn(S.ScheduleID, CURDATE()) AS RunsToday,
+       CURDATE() AS TravelDate, V.Capacity,
        COUNT(T.TicketID)                                   AS Booked,
        V.Capacity - COUNT(T.TicketID)                      AS SeatsLeft,
        ROUND(100 * COUNT(T.TicketID) / V.Capacity, 1)      AS OccupancyPct
@@ -203,7 +300,7 @@ FROM Schedule S
 JOIN Route   R ON S.RouteID   = R.RouteID
 JOIN Vehicle V ON S.VehicleID = V.VehicleID
 LEFT JOIN Ticket T ON T.ScheduleID = S.ScheduleID AND T.TravelDate = CURDATE()
-GROUP BY S.ScheduleID, R.RouteName, V.VehicleNo, V.Status, S.DepartureTime, V.Capacity;
+GROUP BY S.ScheduleID, R.RouteName, V.VehicleNo, V.Status, S.DepartureTime, S.ServiceDays, S.RunsOnHolidays, V.Capacity;
 
 -- Occupancy of every TRIP (schedule on a date) that has at least one ticket, for any date.
 CREATE OR REPLACE VIEW TripOccupancy AS
@@ -243,45 +340,22 @@ WHERE Status = 'Active'
 WITH CHECK OPTION;
 
 -- ---------------------------------------------------------------------
---  4. FUNCTIONS, PROCEDURES
+--  5. PROCEDURES
 -- ---------------------------------------------------------------------
-DROP FUNCTION IF EXISTS SeatsLeft;
+-- Builds the seat map of a vehicle: p_capacity seats, p_per_row to a row, labelled 1A, 1B, ...
+-- The outer columns are window seats, the two middle columns aisle seats, the rest middle seats.
+DROP PROCEDURE IF EXISTS GenerateSeats;
 DELIMITER $$
-CREATE FUNCTION SeatsLeft(p_schedule INT, p_date DATE) RETURNS INT
-READS SQL DATA
+CREATE PROCEDURE GenerateSeats(IN p_vehicle INT, IN p_capacity INT, IN p_per_row INT)
 BEGIN
-    RETURN (SELECT V.Capacity FROM Schedule S JOIN Vehicle V ON S.VehicleID = V.VehicleID
-            WHERE S.ScheduleID = p_schedule)
-         - (SELECT COUNT(*) FROM Ticket WHERE ScheduleID = p_schedule AND TravelDate = p_date);
-END$$
-DELIMITER ;
-
--- Fare = max(MinFare, distance x RatePerKm) minus the travel-card discount; the rates come from FareRule and CardDiscount.
-DROP FUNCTION IF EXISTS CalcFare;
-DELIMITER $$
-CREATE FUNCTION CalcFare(p_passenger INT, p_schedule INT) RETURNS DECIMAL(6,2)
-READS SQL DATA
-BEGIN
-    DECLARE v_dist DECIMAL(5,2);
-    DECLARE v_type VARCHAR(20);
-    DECLARE v_card VARCHAR(20);
-    DECLARE v_rate DECIMAL(5,2);
-    DECLARE v_min  DECIMAL(6,2);
-    DECLARE v_pct  INT;
-    DECLARE v_base DECIMAL(8,2);
-    SELECT R.Distance, R.Type INTO v_dist, v_type
-    FROM Schedule S JOIN Route R ON S.RouteID = R.RouteID WHERE S.ScheduleID = p_schedule;
-    SELECT CardType INTO v_card FROM Passenger WHERE PassengerID = p_passenger;
-    IF v_type IS NULL OR v_card IS NULL THEN
-        RETURN NULL;
-    END IF;
-    SELECT RatePerKm, MinFare INTO v_rate, v_min FROM FareRule WHERE RouteType = v_type;
-    SELECT DiscountPct INTO v_pct FROM CardDiscount WHERE CardType = v_card;
-    IF v_rate IS NULL OR v_pct IS NULL THEN
-        RETURN NULL;
-    END IF;
-    SET v_base = GREATEST(v_min, ROUND(COALESCE(v_dist, 10) * v_rate, 2));
-    RETURN ROUND(v_base * (100 - v_pct) / 100, 2);
+    INSERT INTO Seat (VehicleID, SeatNo, Position)
+    WITH RECURSIVE seq (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < p_capacity)
+    SELECT p_vehicle,
+           CONCAT(i DIV p_per_row + 1, SUBSTRING('ABCDEF', i MOD p_per_row + 1, 1)),
+           CASE WHEN i MOD p_per_row + 1 IN (1, p_per_row) THEN 'Window'
+                WHEN i MOD p_per_row + 1 IN (CEIL(p_per_row / 2), CEIL(p_per_row / 2) + 1) THEN 'Aisle'
+                ELSE 'Middle' END
+    FROM seq;
 END$$
 DELIMITER ;
 
@@ -387,16 +461,17 @@ END$$
 DELIMITER ;
 
 -- ---------------------------------------------------------------------
---  5. TRIGGERS
+--  6. TRIGGERS
 -- ---------------------------------------------------------------------
--- 5a. Reject a seat that is already booked on the same trip (schedule + travel date)
+-- Ticket checks run in this order: 6a -> 6b -> 6c -> 6d (FOLLOWS), then the CHECK constraints and keys.
+-- 6a. Reject a seat that is already booked on the same trip (schedule + travel date)
 DROP TRIGGER IF EXISTS PreventDoubleSeat;
 DELIMITER $$
 CREATE TRIGGER PreventDoubleSeat BEFORE INSERT ON Ticket FOR EACH ROW
 BEGIN
     DECLARE v_lock INT;
     -- Lock the departure first: simultaneous bookings for one schedule queue up here, one at a time,
-    -- instead of deadlocking or overselling. This trigger runs before CheckCapacity (see FOLLOWS below).
+    -- instead of deadlocking or overselling. The other Ticket triggers run after this one (FOLLOWS).
     SELECT ScheduleID INTO v_lock FROM Schedule WHERE ScheduleID = NEW.ScheduleID FOR UPDATE;
     IF EXISTS (SELECT 1 FROM Ticket WHERE ScheduleID = NEW.ScheduleID AND TravelDate = NEW.TravelDate AND SeatNo = NEW.SeatNo) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seat already booked.';
@@ -404,10 +479,21 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 5b. Reject bookings on a full trip or on a vehicle that is not in service
+-- 6b. Reject a travel date on which the departure does not run (service days, public holidays)
+DROP TRIGGER IF EXISTS CheckServiceDay;
+DELIMITER $$
+CREATE TRIGGER CheckServiceDay BEFORE INSERT ON Ticket FOR EACH ROW FOLLOWS PreventDoubleSeat
+BEGIN
+    IF RunsOn(NEW.ScheduleID, NEW.TravelDate) = FALSE THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: This departure does not run on that date.';
+    END IF;
+END$$
+DELIMITER ;
+
+-- 6c. Reject bookings on a full trip or on a vehicle that is not in service
 DROP TRIGGER IF EXISTS CheckCapacity;
 DELIMITER $$
-CREATE TRIGGER CheckCapacity BEFORE INSERT ON Ticket FOR EACH ROW FOLLOWS PreventDoubleSeat
+CREATE TRIGGER CheckCapacity BEFORE INSERT ON Ticket FOR EACH ROW FOLLOWS CheckServiceDay
 BEGIN
     DECLARE v_cap INT;
     DECLARE v_status VARCHAR(20);
@@ -424,7 +510,19 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 5c. A vehicle cannot be scheduled for two overlapping runs
+-- 6d. The seat must exist in the seat map of the departure's vehicle
+DROP TRIGGER IF EXISTS ValidateSeat;
+DELIMITER $$
+CREATE TRIGGER ValidateSeat BEFORE INSERT ON Ticket FOR EACH ROW FOLLOWS CheckCapacity
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM Schedule S JOIN Seat ST ON ST.VehicleID = S.VehicleID
+                   WHERE S.ScheduleID = NEW.ScheduleID AND ST.SeatNo = NEW.SeatNo) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: No such seat on this vehicle.';
+    END IF;
+END$$
+DELIMITER ;
+
+-- 6e. A vehicle cannot be scheduled for two overlapping runs
 DROP TRIGGER IF EXISTS PreventVehicleOverlap;
 DELIMITER $$
 CREATE TRIGGER PreventVehicleOverlap BEFORE INSERT ON Schedule FOR EACH ROW
@@ -436,7 +534,7 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 5d. A vehicle can only run routes of its own type (no metro train on a bus route)
+-- 6f. A vehicle can only run routes of its own type (no metro train on a bus route)
 DROP TRIGGER IF EXISTS CheckVehicleRouteType;
 DELIMITER $$
 CREATE TRIGGER CheckVehicleRouteType BEFORE INSERT ON Schedule FOR EACH ROW
@@ -451,7 +549,7 @@ BEGIN
 END$$
 DELIMITER ;
 
--- 5e/5f. Audit trail for every booking and cancellation, including who did it
+-- 6g/6h. Audit trail for every booking and cancellation, including who did it
 DROP TRIGGER IF EXISTS AuditBooking;
 DELIMITER $$
 CREATE TRIGGER AuditBooking AFTER INSERT ON Ticket FOR EACH ROW
@@ -472,36 +570,72 @@ BEGIN
 END$$
 DELIMITER ;
 
--- ---------------------------------------------------------------------
---  5g. DATABASE USER FOR THE APPLICATION (least privilege)
---  The web application connects as 'transitiq_app', never as root. It may read and change business data,
---  call the stored routines and read the views, but it cannot create or drop objects, and it can only READ
---  the audit table (the triggers, which run with their definer's rights, are the only writers).
---  Demo password: change it with scripts/set_app_password.sh before any real use.
--- ---------------------------------------------------------------------
-CREATE USER IF NOT EXISTS 'transitiq_app'@'localhost' IDENTIFIED BY 'transitiq_app_pw';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Passenger TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Driver    TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Route     TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Vehicle   TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Schedule  TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Ticket    TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Feedback  TO 'transitiq_app'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.AppUser   TO 'transitiq_app'@'localhost';
-GRANT SELECT, UPDATE ON public_transport.FareRule      TO 'transitiq_app'@'localhost';
-GRANT SELECT, UPDATE ON public_transport.CardDiscount  TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.SchemaVersion     TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.TicketAudit       TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.BookingSummary    TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.ScheduleOccupancy TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.TripOccupancy     TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.RouteRevenue      TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.RouteRatings      TO 'transitiq_app'@'localhost';
-GRANT SELECT ON public_transport.ActiveVehicle     TO 'transitiq_app'@'localhost';
-GRANT EXECUTE ON public_transport.* TO 'transitiq_app'@'localhost';
+-- 6i/6j. The seat map follows the vehicle: created with it, rebuilt when its capacity or layout changes.
+-- A change that would remove a seat booked for today or later is refused (the whole UPDATE is undone).
+DROP TRIGGER IF EXISTS CreateSeats;
+DELIMITER $$
+CREATE TRIGGER CreateSeats AFTER INSERT ON Vehicle FOR EACH ROW
+BEGIN
+    CALL GenerateSeats(NEW.VehicleID, NEW.Capacity, NEW.SeatsPerRow);
+END$$
+DELIMITER ;
+
+DROP TRIGGER IF EXISTS ResizeSeats;
+DELIMITER $$
+CREATE TRIGGER ResizeSeats AFTER UPDATE ON Vehicle FOR EACH ROW
+BEGIN
+    IF NEW.Capacity <> OLD.Capacity OR NEW.SeatsPerRow <> OLD.SeatsPerRow THEN
+        DELETE FROM Seat WHERE VehicleID = NEW.VehicleID;
+        CALL GenerateSeats(NEW.VehicleID, NEW.Capacity, NEW.SeatsPerRow);
+        IF EXISTS (SELECT 1 FROM Ticket T JOIN Schedule S ON S.ScheduleID = T.ScheduleID
+                   WHERE S.VehicleID = NEW.VehicleID AND T.TravelDate >= CURDATE()
+                     AND NOT EXISTS (SELECT 1 FROM Seat ST WHERE ST.VehicleID = NEW.VehicleID AND ST.SeatNo = T.SeatNo)) THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seats booked for upcoming trips would disappear with this capacity or layout.';
+        END IF;
+    END IF;
+END$$
+DELIMITER ;
 
 -- ---------------------------------------------------------------------
---  6. SEED DATA
+--  7. SCHEDULED EVENT: forget failed sign-ins after a day (runs inside MySQL; event_scheduler is ON by default)
+-- ---------------------------------------------------------------------
+DROP EVENT IF EXISTS PurgeLoginAttempts;
+CREATE EVENT PurgeLoginAttempts ON SCHEDULE EVERY 1 HOUR
+DO DELETE FROM LoginAttempt WHERE FirstFailure < NOW() - INTERVAL 1 DAY;
+
+-- ---------------------------------------------------------------------
+--  8. DATABASE USER FOR THE APPLICATION (least privilege)
+--  The web application connects as 'routewise_app', never as root. It may read and change business data,
+--  call the stored routines and read the views, but it cannot create or drop objects, it can only READ
+--  the audit table and the seat map (triggers, which run with their definer's rights, write those).
+--  Demo password: change it with scripts/set_app_password.sh before any real use.
+-- ---------------------------------------------------------------------
+CREATE USER IF NOT EXISTS 'routewise_app'@'localhost' IDENTIFIED BY 'routewise_app_pw';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Passenger TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Driver    TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Route     TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Vehicle   TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Schedule  TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Ticket    TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Feedback  TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.AppUser   TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.LoginAttempt TO 'routewise_app'@'localhost';
+GRANT SELECT, INSERT, DELETE ON public_transport.Holiday       TO 'routewise_app'@'localhost';
+GRANT SELECT, UPDATE ON public_transport.FareRule      TO 'routewise_app'@'localhost';
+GRANT SELECT, UPDATE ON public_transport.CardDiscount  TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.Seat              TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.SchemaVersion     TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.TicketAudit       TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.BookingSummary    TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.ScheduleOccupancy TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.TripOccupancy     TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.RouteRevenue      TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.RouteRatings      TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.ActiveVehicle     TO 'routewise_app'@'localhost';
+GRANT EXECUTE ON public_transport.* TO 'routewise_app'@'localhost';
+
+-- ---------------------------------------------------------------------
+--  9. SEED DATA
 -- ---------------------------------------------------------------------
 INSERT IGNORE INTO FareRule (RouteType, RatePerKm, MinFare) VALUES ('Bus', 1.50, 10.00), ('Metro', 1.00, 10.00);
 INSERT IGNORE INTO CardDiscount (CardType, DiscountPct) VALUES ('None', 0), ('Daily', 10), ('Weekly', 20), ('Monthly', 30);
@@ -521,26 +655,31 @@ INSERT IGNORE INTO Driver (DriverID, Name, LicenseNo, ShiftHours, Phone) VALUES
 (5, 'Lakshmi Iyer', 'KA-51-202405', 8, '9876543214'),
 (6, 'Imran Khan',   'KA-01-202406', 7, '9876543215');
 
-INSERT IGNORE INTO Vehicle (VehicleID, VehicleNo, Type, Capacity, Model, Status, DriverID) VALUES
-(1, 'KA-01-F-1234', 'Bus',   40, 'Tata Starbus',         'Active',      1),
-(2, 'KA-01-F-5678', 'Bus',   45, 'Ashok Leyland Viking', 'Active',      2),
-(3, 'KA-01-F-9012', 'Bus',   30, 'Volvo 8400',           'Active',      3),
-(4, 'KA-51-M-1001', 'Metro', 60, 'BEML Metro',           'Active',      4),
-(5, 'KA-51-M-1002', 'Metro', 60, 'BEML Metro',           'Active',      5),
-(6, 'KA-01-F-3456', 'Bus',   40, 'Eicher Skyline',       'Maintenance', NULL);
+-- (the CreateSeats trigger builds each vehicle's seat map as the vehicle is inserted)
+INSERT IGNORE INTO Vehicle (VehicleID, VehicleNo, Type, Capacity, SeatsPerRow, Model, Status, DriverID) VALUES
+(1, 'KA-01-F-1234', 'Bus',   40, 4, 'Tata Starbus',         'Active',      1),
+(2, 'KA-01-F-5678', 'Bus',   45, 4, 'Ashok Leyland Viking', 'Active',      2),
+(3, 'KA-01-F-9012', 'Bus',   30, 3, 'Volvo 8400',           'Active',      3),
+(4, 'KA-51-M-1001', 'Metro', 60, 6, 'BEML Metro',           'Active',      4),
+(5, 'KA-51-M-1002', 'Metro', 60, 6, 'BEML Metro',           'Active',      5),
+(6, 'KA-01-F-3456', 'Bus',   40, 4, 'Eicher Skyline',       'Maintenance', NULL);
 
-INSERT INTO Schedule (ScheduleID, RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency)
+-- Departures 1-10 run every day; 11 is a weekday office service (not on public holidays), 12 a weekend extra.
+INSERT INTO Schedule (ScheduleID, RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency, ServiceDays, RunsOnHolidays)
 SELECT * FROM (
-    SELECT 1 AS ScheduleID, 1 AS RouteID, 1 AS VehicleID, '06:00:00' AS DepartureTime, '07:30:00' AS ArrivalTime, 30 AS Frequency
-    UNION ALL SELECT 2,  1, 2, '08:00:00', '09:30:00', 30
-    UNION ALL SELECT 3,  2, 2, '10:00:00', '11:15:00', 20
-    UNION ALL SELECT 4,  2, 3, '17:00:00', '18:30:00', 20
-    UNION ALL SELECT 5,  3, 4, '07:00:00', '08:10:00', 10
-    UNION ALL SELECT 6,  3, 4, '18:00:00', '19:10:00', 10
-    UNION ALL SELECT 7,  4, 5, '09:00:00', '09:55:00', 10
-    UNION ALL SELECT 8,  5, 3, '05:30:00', '06:45:00', 60
-    UNION ALL SELECT 9,  5, 1, '14:00:00', '15:15:00', 60
-    UNION ALL SELECT 10, 4, 5, '20:00:00', '20:55:00', 15
+    SELECT 1 AS ScheduleID, 1 AS RouteID, 1 AS VehicleID, '06:00:00' AS DepartureTime, '07:30:00' AS ArrivalTime, 30 AS Frequency,
+           'Mon,Tue,Wed,Thu,Fri,Sat,Sun' AS ServiceDays, TRUE AS RunsOnHolidays
+    UNION ALL SELECT 2,  1, 2, '08:00:00', '09:30:00', 30, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 3,  2, 2, '10:00:00', '11:15:00', 20, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 4,  2, 3, '17:00:00', '18:30:00', 20, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 5,  3, 4, '07:00:00', '08:10:00', 10, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 6,  3, 4, '18:00:00', '19:10:00', 10, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 7,  4, 5, '09:00:00', '09:55:00', 10, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 8,  5, 3, '05:30:00', '06:45:00', 60, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 9,  5, 1, '14:00:00', '15:15:00', 60, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 10, 4, 5, '20:00:00', '20:55:00', 15, 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', TRUE
+    UNION ALL SELECT 11, 1, 1, '10:00:00', '11:30:00', 30, 'Mon,Tue,Wed,Thu,Fri',         FALSE
+    UNION ALL SELECT 12, 3, 4, '12:00:00', '13:10:00', 20, 'Sat,Sun',                     TRUE
 ) AS sch
 WHERE NOT EXISTS (SELECT 1 FROM Schedule);
 
@@ -559,22 +698,28 @@ INSERT IGNORE INTO Passenger (Name, Email, Phone, DOB, CardType) VALUES
 ('Ananya Joshi',   'ananya@gmail.com',   '9000000014', '2005-09-30', 'Weekly'),
 ('Neha Kapoor',    'neha@gmail.com',     '9000000015', '2003-10-11', 'None');
 
--- Sample tickets / feedback: inserted only into an empty table so re-imports stay clean (tickets are for today)
+-- Public holidays (fixed-date national and Karnataka state holidays)
+INSERT IGNORE INTO Holiday (HolidayDate, Name) VALUES
+('2026-08-15', 'Independence Day'), ('2026-10-02', 'Gandhi Jayanti'), ('2026-11-01', 'Karnataka Rajyotsava'),
+('2026-12-25', 'Christmas'), ('2027-01-26', 'Republic Day'), ('2027-05-01', 'May Day'), ('2027-08-15', 'Independence Day');
+
+-- Sample tickets / feedback: inserted only into an empty table so re-imports stay clean (tickets are for today,
+-- on departures that run every day)
 INSERT INTO Ticket (PassengerID, ScheduleID, TravelDate, SeatNo, Fare)
 SELECT t.PassengerID, t.ScheduleID, CURDATE(), t.SeatNo, t.Fare FROM (
-    SELECT 1 AS PassengerID, 1 AS ScheduleID, 'A1' AS SeatNo, 45.00 AS Fare
-    UNION ALL SELECT 2, 1, 'A2', 45.00   UNION ALL SELECT 3, 1, 'B1', 50.00
-    UNION ALL SELECT 9, 1, 'C1', 45.00   UNION ALL SELECT 4, 2, 'A1', 45.00
-    UNION ALL SELECT 5, 2, 'A2', 45.00   UNION ALL SELECT 8, 2, 'B1', 45.00
-    UNION ALL SELECT 6, 3, 'C1', 30.00   UNION ALL SELECT 7, 3, 'C2', 30.00
-    UNION ALL SELECT 1, 3, 'C3', 30.00   UNION ALL SELECT 8, 4, 'D1', 35.00
-    UNION ALL SELECT 10, 4, 'D2', 35.00  UNION ALL SELECT 9, 5, 'M1', 25.00
-    UNION ALL SELECT 10, 5, 'M2', 25.00  UNION ALL SELECT 11, 5, 'M3', 25.00
-    UNION ALL SELECT 12, 6, 'M1', 25.00  UNION ALL SELECT 1, 6, 'M2', 25.00
-    UNION ALL SELECT 2, 7, 'N1', 30.00   UNION ALL SELECT 3, 7, 'N2', 30.00
-    UNION ALL SELECT 7, 10, 'N1', 30.00  UNION ALL SELECT 4, 8, 'E1', 60.00
-    UNION ALL SELECT 5, 8, 'E2', 60.00   UNION ALL SELECT 6, 9, 'E1', 60.00
-    UNION ALL SELECT 11, 9, 'E2', 60.00
+    SELECT 1 AS PassengerID, 1 AS ScheduleID, '1A' AS SeatNo, 45.00 AS Fare
+    UNION ALL SELECT 2, 1, '1B', 45.00   UNION ALL SELECT 3, 1, '2A', 50.00
+    UNION ALL SELECT 9, 1, '3A', 45.00   UNION ALL SELECT 4, 2, '1A', 45.00
+    UNION ALL SELECT 5, 2, '1B', 45.00   UNION ALL SELECT 8, 2, '2A', 45.00
+    UNION ALL SELECT 6, 3, '3A', 30.00   UNION ALL SELECT 7, 3, '3B', 30.00
+    UNION ALL SELECT 1, 3, '3C', 30.00   UNION ALL SELECT 8, 4, '4A', 35.00
+    UNION ALL SELECT 10, 4, '4B', 35.00  UNION ALL SELECT 9, 5, '1A', 25.00
+    UNION ALL SELECT 10, 5, '1B', 25.00  UNION ALL SELECT 11, 5, '1C', 25.00
+    UNION ALL SELECT 12, 6, '1A', 25.00  UNION ALL SELECT 1, 6, '1B', 25.00
+    UNION ALL SELECT 2, 7, '2A', 30.00   UNION ALL SELECT 3, 7, '2B', 30.00
+    UNION ALL SELECT 7, 10, '2A', 30.00  UNION ALL SELECT 4, 8, '5A', 60.00
+    UNION ALL SELECT 5, 8, '5B', 60.00   UNION ALL SELECT 6, 9, '5A', 60.00
+    UNION ALL SELECT 11, 9, '5B', 60.00
 ) AS t
 WHERE NOT EXISTS (SELECT 1 FROM Ticket);
 
@@ -593,7 +738,8 @@ SELECT * FROM (
 ) AS f
 WHERE NOT EXISTS (SELECT 1 FROM Feedback);
 
--- A fresh install already contains everything up to version 2.
+-- A fresh install already contains everything up to version 3.
 INSERT IGNORE INTO SchemaVersion (Version, Name) VALUES
 (1, 'baseline: bookings, audit trail, roles, least-privilege user'),
-(2, 'travel dates, fare rules, type check, audit actor, schema versioning');
+(2, 'travel dates, fare rules, type check, audit actor, schema versioning'),
+(3, 'seat map, service days and holidays, full-text search, stored sign-in limit');

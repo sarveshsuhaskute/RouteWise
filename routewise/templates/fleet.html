@@ -3,7 +3,7 @@
 {% block content %}
 {% set status_pill = {'Active': 'pill-green', 'Maintenance': 'pill-amber', 'Retired': 'pill-red'} %}
 <div class="page-head">
-    <div><h1>Fleet &amp; Drivers</h1><p>Vehicles can only take bookings while their status is <em>Active</em>.</p></div>
+    <div><h1>Fleet &amp; Drivers</h1><p>Vehicles take bookings only while <em>Active</em>; each vehicle's seat map is built from its capacity and seats per row.</p></div>
     <div class="w-admin">
         <button class="btn btn-outline-secondary me-1" data-bs-toggle="modal" data-bs-target="#driverModal"><i class="bi bi-person-badge me-1"></i>Add driver</button>
         <button class="btn btn-brand" data-bs-toggle="modal" data-bs-target="#addVehicle"><i class="bi bi-plus-lg me-1"></i>Add vehicle</button>
@@ -20,13 +20,13 @@
             <tr>
                 <td class="fw-semibold">{{ v.VehicleNo }}</td>
                 <td><i class="bi bi-{{ 'train-front' if v.Type == 'Metro' else 'bus-front' }} me-1"></i>{{ v.Type }}</td>
-                <td>{{ v.Model or '—' }}</td><td>{{ v.Capacity }} seats</td>
+                <td>{{ v.Model or '—' }}</td><td>{{ v.Capacity }} seats <span class="text-muted small">· {{ v.SeatsPerRow }} across · {{ v.WindowSeats }} window</span></td>
                 <td>{{ v.DriverName or 'Unassigned' }}</td>
                 <td><span class="pill {{ status_pill.get(v.Status, 'pill-grey') }}">{{ v.Status }}</span></td>
                 <td class="text-end text-nowrap">
                     <button class="btn btn-sm btn-outline-secondary w-admin" data-edit="editVehicle"
                         data-action="{{ url_for('edit_vehicle', vid=v.VehicleID) }}"
-                        data-fields='{{ {"vehicle_no": v.VehicleNo, "type": v.Type, "capacity": v.Capacity, "model": v.Model, "status": v.Status, "driver_id": v.DriverID} | tojson | forceescape }}'>
+                        data-fields='{{ {"vehicle_no": v.VehicleNo, "type": v.Type, "capacity": v.Capacity, "seats_per_row": v.SeatsPerRow, "model": v.Model, "status": v.Status, "driver_id": v.DriverID} | tojson | forceescape }}'>
                         <i class="bi bi-pencil"></i></button>
                     <form class="d-inline w-admin" action="{{ url_for('delete_vehicle', vid=v.VehicleID) }}" method="POST" data-confirm="Delete {{ v.VehicleNo }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
@@ -65,7 +65,8 @@
         <div class="col-md-6"><label class="form-label">Vehicle number</label><input name="vehicle_no" class="form-control" required maxlength="20"></div>
         <div class="col-md-6"><label class="form-label">Type</label>
             <select name="type" class="form-select">{% for t in types %}<option>{{ t.RouteType }}</option>{% endfor %}</select></div>
-        <div class="col-md-6"><label class="form-label">Capacity</label><input name="capacity" type="number" min="1" class="form-control" required></div>
+        <div class="col-md-3"><label class="form-label">Capacity</label><input name="capacity" type="number" min="1" max="600" class="form-control" required></div>
+        <div class="col-md-3"><label class="form-label">Seats per row</label><select name="seats_per_row" class="form-select">{% for n in range(2, 7) %}<option {{ 'selected' if n == 4 }}>{{ n }}</option>{% endfor %}</select></div>
         <div class="col-md-6"><label class="form-label">Model</label><input name="model" class="form-control" maxlength="50"></div>
         <div class="col-md-6"><label class="form-label">Status</label>
             <select name="status" class="form-select"><option>Active</option><option>Maintenance</option><option>Retired</option></select></div>

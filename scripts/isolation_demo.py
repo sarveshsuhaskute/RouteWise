@@ -3,8 +3,8 @@
     .venv/bin/python scripts/isolation_demo.py          # prints a table
     .venv/bin/python scripts/isolation_demo.py --json   # machine-readable (used by the tests)
 
-It builds a throw-away database (transitiq_isolation), plays three classic situations between two sessions A and B, and
-drops the database again. These are the effects that decide how TransitIQ books a seat:
+It builds a throw-away database (routewise_isolation), plays three classic situations between two sessions A and B, and
+drops the database again. These are the effects that decide how RouteWise books a seat:
 
   1. Non-repeatable read:  A reads a balance, B changes it and commits, A reads again.
   2. Phantom row:          A counts rows, B inserts one and commits, A counts again.
@@ -19,7 +19,7 @@ import time
 
 import mysql.connector
 
-DB = 'transitiq_isolation'
+DB = 'routewise_isolation'
 ADMIN = dict(user=os.environ.get('MYSQL_ADMIN_USER', 'root'), password=os.environ.get('MYSQL_ADMIN_PASSWORD', ''),
              host=os.environ.get('DB_HOST', 'localhost'))
 

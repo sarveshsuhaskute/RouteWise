@@ -2,7 +2,6 @@
 {% block title %}Passengers{% endblock %}
 {% block content %}
 {% from '_pager.html' import pager, searchbox %}
-{% set cards = ['None', 'Daily', 'Weekly', 'Monthly'] %}
 <div class="page-head">
     <div><h1>Passengers</h1><p>Create, edit and remove registered passengers.</p></div>
     <button class="btn btn-brand w-staff" data-bs-toggle="modal" data-bs-target="#addModal"><i class="bi bi-person-plus me-1"></i>Add passenger</button>
@@ -45,7 +44,7 @@
         <div class="col-md-6"><label class="form-label">Phone</label><input name="phone" class="form-control" maxlength="15"></div>
         <div class="col-md-6"><label class="form-label">Date of birth</label><input name="dob" type="date" class="form-control"></div>
         <div class="col-12"><label class="form-label">Travel card</label>
-            <select name="card_type" class="form-select">{% for c in cards %}<option>{{ c }}</option>{% endfor %}</select></div>
+            <select name="card_type" class="form-select">{% for c in cards %}<option value="{{ c.CardType }}">{{ c.CardType }}{% if c.DiscountPct %} ({{ c.DiscountPct }}% off){% endif %}</option>{% endfor %}</select></div>
     </div>
 {% endmacro %}
 

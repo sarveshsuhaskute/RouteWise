@@ -3,7 +3,7 @@
 {% block content %}
 {% from '_pager.html' import pager, searchbox %}
 <div class="page-head">
-    <div><h1>Routes &amp; Schedules</h1><p>Plan routes and the departures that run on them.</p></div>
+    <div><h1>Routes &amp; Schedules</h1><p>Routes, the departures that run on them and on which days, public holidays and fares.</p></div>
     <div class="w-admin">
         <button class="btn btn-outline-secondary me-1" data-bs-toggle="modal" data-bs-target="#routeModal"><i class="bi bi-signpost me-1"></i>Add route</button>
         <button class="btn btn-brand" data-bs-toggle="modal" data-bs-target="#scheduleModal"><i class="bi bi-calendar-plus me-1"></i>Add schedule</button>
@@ -32,13 +32,15 @@
     <div class="card-header"><span><i class="bi bi-calendar3 me-2"></i>Schedules</span>
         {{ searchbox('routes', q, 'Search route, vehicle or schedule no.') }}</div>
     <div class="table-wrap"><table class="table table-hover align-middle" id="schTable">
-        <thead><tr><th>#</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Occupancy</th><th>Seats left</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Route</th><th>Vehicle</th><th>Departs</th><th>Runs</th><th>Occupancy today</th><th>Seats left</th><th></th></tr></thead>
         <tbody>
         {% for s in schedules %}
             <tr>
                 <td>{{ s.ScheduleID }}</td><td class="fw-semibold">{{ s.RouteName }}</td>
                 <td>{{ s.VehicleNo }} {% if s.VehicleStatus != 'Active' %}<span class="pill pill-amber">{{ s.VehicleStatus }}</span>{% endif %}</td>
                 <td>{{ s.DepartureTime | fmt }}</td>
+                <td class="text-nowrap">{{ s.ServiceDays | days }}{% if not s.RunsOnHolidays %} <span class="pill pill-grey" title="Does not run on public holidays">no holidays</span>{% endif %}
+                    {% if not s.RunsToday %}<span class="pill pill-amber">not today</span>{% endif %}</td>
                 <td><div class="d-flex align-items-center gap-2"><div class="occ flex-grow-1"><span style="width: {{ s.OccupancyPct | float }}%"></span></div>
                     <small class="text-muted">{{ s.OccupancyPct }}%</small></div></td>
                 <td>{{ s.SeatsLeft }} / {{ s.Capacity }}</td>
@@ -90,6 +92,25 @@
     </div></div>
 </div>
 
+<div class="card mt-3">
+    <div class="card-header"><span><i class="bi bi-calendar-x me-2"></i>Public holidays <span class="text-muted fw-normal small">· departures marked “no holidays” do not run on these dates, and cannot be booked for them</span></span></div>
+    <div class="card-body">
+        <div class="d-flex flex-wrap gap-2 mb-3">
+        {% for h in holidays %}
+            <span class="holiday-chip"><b>{{ h.HolidayDate | fmt }}</b> {{ h.Name }}
+            {% if role == 'admin' %}<form class="d-inline" method="POST" action="{{ url_for('delete_holiday', day=h.HolidayDate.isoformat()) }}" data-confirm="Remove {{ h.Name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn-x" title="Remove"><i class="bi bi-x"></i></button></form>{% endif %}</span>
+        {% else %}<span class="text-muted small">No holidays recorded.</span>{% endfor %}
+        </div>
+        {% if role == 'admin' %}
+        <form class="row g-2 align-items-end" method="POST" action="{{ url_for('add_holiday') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-sm-4 col-lg-3"><label class="form-label">Date</label><input type="date" name="holiday_date" class="form-control form-control-sm" required></div>
+            <div class="col-sm-5 col-lg-4"><label class="form-label">Name</label><input name="name" class="form-control form-control-sm" maxlength="100" required placeholder="e.g. Ugadi"></div>
+            <div class="col-auto"><button class="btn btn-sm btn-outline-secondary"><i class="bi bi-plus-lg me-1"></i>Add holiday</button></div>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
 {% if role == 'admin' %}
 <div class="modal fade" id="routeModal" tabindex="-1"><div class="modal-dialog"><form class="modal-content" method="POST" action="{{ url_for('add_route') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="modal-header"><h5 class="modal-title">Add route</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
@@ -113,6 +134,12 @@
         <div class="col-md-4"><label class="form-label">Departure</label><input name="departure" type="time" class="form-control" required></div>
         <div class="col-md-4"><label class="form-label">Arrival</label><input name="arrival" type="time" class="form-control" required></div>
         <div class="col-md-4"><label class="form-label">Every (min)</label><input name="frequency" type="number" min="1" class="form-control"></div>
+        <div class="col-12"><label class="form-label">Runs on</label>
+            <div class="d-flex flex-wrap gap-1">{% for d in week %}
+                <input type="checkbox" class="btn-check" name="days" value="{{ d }}" id="day{{ d }}" checked><label class="btn btn-sm btn-outline-secondary day-toggle" for="day{{ d }}">{{ d }}</label>
+            {% endfor %}</div></div>
+        <div class="col-12"><div class="form-check"><input class="form-check-input" type="checkbox" name="runs_on_holidays" value="1" id="runsHol" checked>
+            <label class="form-check-label small" for="runsHol">Also runs on public holidays</label></div></div>
     </div></div>
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Save</button></div>
 </form></div></div>

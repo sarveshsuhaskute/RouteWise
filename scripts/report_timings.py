@@ -12,26 +12,27 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app  # noqa: E402  (importing the application gives the report definitions and the database helpers)
+from routewise.db import db_config, query, query_proc  # noqa: E402
+from routewise.views.reports import REPORTS  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--runs', type=int, default=5)
     args = ap.parse_args()
-    tickets = app.query('SELECT COUNT(*) AS n FROM Ticket')[0]['n']
-    print(f"Database {app.db_config['database']}: {tickets:,} tickets, {args.runs} runs per report\n")
+    tickets = query('SELECT COUNT(*) AS n FROM Ticket')[0]['n']
+    print(f"Database {db_config['database']}: {tickets:,} tickets, {args.runs} runs per report\n")
     print(f"{'#':>2}  {'Report':<52}{'rows':>6}{'mean ms':>10}{'max ms':>9}")
     total = 0.0
-    for i, r in enumerate(app.REPORTS, 1):
+    for i, r in enumerate(REPORTS, 1):
         times = []
         for _ in range(args.runs):
             t = time.perf_counter()
-            rows = app.query_proc(r['proc']) if r.get('proc') else app.query(r['sql'])
+            rows = query_proc(r['proc']) if r.get('proc') else query(r['sql'])
             times.append((time.perf_counter() - t) * 1000)
         total += statistics.mean(times)
         print(f"{i:>2}  {r['title'][:51]:<52}{len(rows):>6}{statistics.mean(times):>10.1f}{max(times):>9.1f}")
-    print(f"\nAll {len(app.REPORTS)} reports together: about {total:.0f} ms")
+    print(f"\nAll {len(REPORTS)} reports together: about {total:.0f} ms")
 
 
 if __name__ == '__main__':

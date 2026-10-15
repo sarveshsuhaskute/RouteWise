@@ -7,7 +7,7 @@ NEW="${1:?usage: set_app_password.sh NEW_PASSWORD (at least 12 characters)}"
 [ "${#NEW}" -ge 12 ] || { echo "Choose a password of at least 12 characters." >&2; exit 1; }
 case "$NEW" in *"'"*|*'\'*) echo "Please avoid quote and backslash characters in this password." >&2; exit 1;; esac
 export MYSQL_PWD="${MYSQL_ADMIN_PASSWORD:-}"
-mysql -u "${MYSQL_ADMIN_USER:-root}" -e "ALTER USER 'transitiq_app'@'localhost' IDENTIFIED BY '$NEW'"
+mysql -u "${MYSQL_ADMIN_USER:-root}" -e "ALTER USER 'routewise_app'@'localhost' IDENTIFIED BY '$NEW'"
 ENV_FILE="$(dirname "$0")/../.env"
 touch "$ENV_FILE"
 grep -v '^DB_PASSWORD=' "$ENV_FILE" > "$ENV_FILE.tmp" || true

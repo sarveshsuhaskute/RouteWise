@@ -1,4 +1,4 @@
--- Analytical queries (the same ones shown on the app's Reports page)
+-- RouteWise: the analytical queries shown on the Reports page
 USE public_transport;
 
 -- 1. Revenue by route
@@ -96,7 +96,17 @@ CALL RouteScorecard();
 
 -- 12. Audit trail (latest 10 events)
 -- Rows written automatically by the AuditBooking / AuditCancellation triggers.
-SELECT A.AuditID, A.Action, A.TicketID, P.Name AS Passenger, A.SeatNo, A.Fare, A.ActionTime
+SELECT A.AuditID, A.Action, A.TicketID, P.Name AS Passenger, A.SeatNo, A.Fare, A.Actor, A.ActionTime
 FROM TicketAudit A JOIN Passenger P ON P.PassengerID = A.PassengerID
 ORDER BY A.AuditID DESC
 LIMIT 10;
+
+-- 13. Window, aisle or middle seat?
+-- Join on a composite key (vehicle + seat label) into the seat map: how full each seat position is across all trips.
+SELECT ST.Position, COUNT(*) AS Tickets,
+       ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS SharePct
+FROM Ticket T
+JOIN Schedule S ON S.ScheduleID = T.ScheduleID
+JOIN Seat ST    ON ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo
+GROUP BY ST.Position
+ORDER BY Tickets DESC;

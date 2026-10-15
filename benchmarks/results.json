@@ -1,13 +1,13 @@
 {
   "rows": 200000,
-  "load_seconds": 1.3,
+  "load_seconds": 4.9,
   "results": [
     {
       "query": "Passenger history: WHERE PassengerID = ?",
       "index": "idx_ticket_passenger",
-      "with_ms": 0.17,
-      "without_ms": 18.86,
-      "speedup": 110.9,
+      "with_ms": 0.12,
+      "without_ms": 21.91,
+      "speedup": 182.6,
       "with_plan": [
         {
           "table": "TicketBench",
@@ -21,16 +21,16 @@
           "table": "TicketBench",
           "type": "ALL",
           "key": null,
-          "rows": 199711
+          "rows": 199740
         }
       ]
     },
     {
       "query": "Seat lookup: WHERE ScheduleID = ? AND TravelDate = ? AND SeatNo = ?",
       "index": "uq_trip_seat",
-      "with_ms": 0.12,
-      "without_ms": 3.86,
-      "speedup": 32.2,
+      "with_ms": 0.07,
+      "without_ms": 4.02,
+      "speedup": 57.4,
       "with_plan": [
         {
           "table": "TicketBench",
@@ -44,16 +44,16 @@
           "table": "TicketBench",
           "type": "ref",
           "key": "idx_ticket_date",
-          "rows": 6667
+          "rows": 6700
         }
       ]
     },
     {
       "query": "Passenger spend per route (3-table join)",
       "index": "idx_ticket_passenger",
-      "with_ms": 0.35,
-      "without_ms": 24.88,
-      "speedup": 71.1,
+      "with_ms": 0.17,
+      "without_ms": 18.77,
+      "speedup": 110.4,
       "with_plan": [
         {
           "table": "T",
@@ -91,7 +91,31 @@
           "table": "T",
           "type": "ref",
           "key": "uq_trip_seat",
-          "rows": 22190
+          "rows": 1977
+        }
+      ]
+    },
+    {
+      "query": "Name search: MATCH ... AGAINST vs LIKE %word%",
+      "index": "ft_passenger",
+      "with_ms": 0.16,
+      "without_ms": 41.18,
+      "speedup": 257.4,
+      "rows_found": 5,
+      "with_plan": [
+        {
+          "table": "PassengerBench",
+          "type": "fulltext",
+          "key": "ft_passenger",
+          "rows": 1
+        }
+      ],
+      "without_plan": [
+        {
+          "table": "PassengerBench",
+          "type": "ALL",
+          "key": null,
+          "rows": 198884
         }
       ]
     }
