@@ -35,5 +35,11 @@ app.config.update(
     DEMO_USERS=os.environ.get('DEMO_USERS', '1') != '0',                        # create the demo accounts on first start
 )
 
+if os.environ.get('BEHIND_PROXY') == '1':          # behind Caddy (docker-compose.yml): trust its X-Forwarded-* headers
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+if os.environ.get('COOKIE_SECURE') == '1':           # session cookie only over HTTPS
+    app.config['SESSION_COOKIE_SECURE'] = True
+
 from . import web, auth  # noqa: E402,F401  (registers filters, error pages, sign-in and user management)
 from .views import dashboard, bookings, tickets, passengers, fleet, network, feedback, reports  # noqa: E402,F401

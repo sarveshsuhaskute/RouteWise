@@ -1,0 +1,50 @@
+# RouteWise on any machine with Docker: MySQL 8.4 + the application + Caddy for HTTPS.
+#   cp .env.example .env    # set MYSQL_ROOT_PASSWORD, APP_DB_PASSWORD and SECRET_KEY first
+#   docker compose up -d --build
+#   open https://localhost:8443     (a real domain: set SITE_ADDRESS=transit.example.org and map ports 80/443)
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./schema.sql:/routewise/schema.sql:ro
+      - ./deploy/initdb:/docker-entrypoint-initdb.d:ro       # imports schema.sql on the first start only
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+
+  app:
+    build: .
+    environment:
+      DB_HOST: db
+      DB_PASSWORD: ${APP_DB_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      DEMO_USERS: ${DEMO_USERS:-1}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.8
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  dbdata:
+  caddydata:

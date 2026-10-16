@@ -21,13 +21,14 @@ def ticket_code(t):
 def load_ticket(ticket_id):
     rows = query("""SELECT T.TicketID, T.ScheduleID, T.TravelDate, T.SeatNo, T.Fare, T.BookingDate, T.PassengerID,
                            P.Name AS PassengerName, P.CardType, R.RouteName, R.Origin, R.Destination,
-                           V.VehicleNo, S.DepartureTime, S.ArrivalTime, ST.Position
+                           V.VehicleNo, S.DepartureTime, S.ArrivalTime, ST.Position, PM.Method AS PaidBy
                     FROM Ticket T
                     JOIN Passenger P ON P.PassengerID = T.PassengerID
                     JOIN Schedule  S ON S.ScheduleID  = T.ScheduleID
                     JOIN Route     R ON R.RouteID     = S.RouteID
-                    JOIN Vehicle   V ON V.VehicleID   = S.VehicleID
-                    LEFT JOIN Seat ST ON ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo
+                    JOIN Vehicle   V ON V.VehicleID   = TripVehicle(T.ScheduleID, T.TravelDate)
+                    LEFT JOIN Seat ST ON ST.VehicleID = V.VehicleID AND ST.SeatNo = T.SeatNo
+                    LEFT JOIN Payment PM ON PM.TicketID = T.TicketID AND PM.Kind = 'Sale'
                     WHERE T.TicketID = %s""", (ticket_id,))
     return rows[0] if rows else None
 

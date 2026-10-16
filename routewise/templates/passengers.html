@@ -21,10 +21,10 @@
                 <td class="text-end text-nowrap">
                     <button class="btn btn-sm btn-outline-secondary w-staff" data-edit="editModal"
                         data-action="{{ url_for('edit_passenger', pid=p.PassengerID) }}"
-                        data-fields='{{ {"name": p.Name, "email": p.Email, "phone": p.Phone, "dob": p.DOB.isoformat() if p.DOB else "", "card_type": p.CardType} | tojson | forceescape }}'>
+                        data-fields='{{ {"name": p.Name, "email": p.Email, "phone": p.Phone, "dob": p.DOB.isoformat() if p.DOB else "", "card_type": p.CardType} | tojson | forceescape }}' aria-label="Edit">
                         <i class="bi bi-pencil"></i></button>
                     <form class="d-inline w-admin" action="{{ url_for('delete_passenger', pid=p.PassengerID) }}" method="POST" data-confirm="Delete {{ p.Name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                        <button class="btn btn-sm btn-outline-danger" aria-label="Delete"><i class="bi bi-trash"></i></button>
                     </form>
                 </td>
             </tr>

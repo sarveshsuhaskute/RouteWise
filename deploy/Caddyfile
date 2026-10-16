@@ -1,0 +1,12 @@
+# HTTPS in front of RouteWise. For "localhost" Caddy uses its own local certificate authority (the browser will ask you
+# to trust it); for a real domain name it obtains and renews a Let's Encrypt certificate automatically.
+{$SITE_ADDRESS} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+	}
+	reverse_proxy app:8000
+}

@@ -6,3 +6,4 @@ __pycache__/
 backups/
 .DS_Store
 .env
+tools/node_modules/

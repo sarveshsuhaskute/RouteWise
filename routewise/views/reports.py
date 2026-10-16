@@ -94,9 +94,18 @@ REPORTS = [
              "       ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS SharePct\n"
              "FROM Ticket T\n"
              "JOIN Schedule S ON S.ScheduleID = T.ScheduleID\n"
-             "JOIN Seat ST    ON ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo\n"
+             "LEFT JOIN VehicleSwap VS ON VS.ScheduleID = T.ScheduleID AND VS.TravelDate = T.TravelDate\n"
+             "JOIN Seat ST ON ST.VehicleID = COALESCE(VS.VehicleID, S.VehicleID) AND ST.SeatNo = T.SeatNo\n"
              "GROUP BY ST.Position\n"
              "ORDER BY Tickets DESC;")},
+    {'title': 'Takings by payment method (cash-up)',
+     'desc': 'GROUP BY ... WITH ROLLUP over the payment ledger of the last 30 days: subtotals per method and a grand total; GROUPING() labels the summary rows.',
+     'sql': ("SELECT IF(GROUPING(Method), 'All methods', Method) AS Method,\n"
+             "       IF(GROUPING(Kind), 'Net', Kind) AS Kind,\n"
+             "       COUNT(*) AS Entries, SUM(Amount) AS Amount\n"
+             "FROM Payment\n"
+             "WHERE PaidAt >= CURDATE() - INTERVAL 30 DAY\n"
+             "GROUP BY Method, Kind WITH ROLLUP;")},
 ]
 
 _report_cache = {'at': 0.0, 'db': None, 'results': None}
@@ -111,7 +120,8 @@ def run_reports(force=False):
         return _report_cache['results'], _report_cache['at']
     results = []
     for r in REPORTS:
-        rows = query_proc(r['proc'])[:10] if r.get('proc') else query(r['sql'])
+        # reports only read, so they can run on a read replica when one is configured (DB_REPLICA_HOST)
+        rows = query_proc(r['proc'], replica=True)[:10] if r.get('proc') else query(r['sql'], replica=True)
         results.append({**r, 'rows': rows, 'cols': list(rows[0].keys()) if rows else []})
     _report_cache.update(at=now, db=db_config['database'], results=results)
     return results, now

@@ -4,7 +4,7 @@ import math
 from flask import flash, redirect, render_template, request, url_for
 
 from .. import app
-from ..db import execute, query
+from ..db import execute, query, query_proc
 from ..search import VEHICLE, boolean_query, like, prefix
 from ..web import WEEK, date_arg, opt, page_info, run, val
 
@@ -39,6 +39,13 @@ def routes():
         fare_rules=query("SELECT * FROM FareRule ORDER BY RouteType"),
         discounts=query("SELECT * FROM CardDiscount ORDER BY DiscountPct"),
         holidays=query("SELECT * FROM Holiday WHERE HolidayDate >= CURDATE() - INTERVAL 30 DAY ORDER BY HolidayDate"),
+        swaps=query("""SELECT VS.ScheduleID, VS.TravelDate, VS.Reason, R.RouteName, S.DepartureTime,
+                              V0.VehicleNo AS Scheduled, V1.VehicleNo AS Replacement
+                       FROM VehicleSwap VS JOIN Schedule S ON S.ScheduleID = VS.ScheduleID JOIN Route R ON R.RouteID = S.RouteID
+                       JOIN Vehicle V0 ON V0.VehicleID = S.VehicleID JOIN Vehicle V1 ON V1.VehicleID = VS.VehicleID
+                       WHERE VS.TravelDate >= CURDATE() ORDER BY VS.TravelDate, S.DepartureTime"""),
+        all_schedules=query("""SELECT S.ScheduleID, R.RouteName, S.DepartureTime, V.VehicleNo FROM Schedule S
+                               JOIN Route R ON R.RouteID = S.RouteID JOIN Vehicle V ON V.VehicleID = S.VehicleID ORDER BY S.ScheduleID"""),
         route_list=query("SELECT RouteID, RouteName FROM Route ORDER BY RouteName"))
 
 
@@ -61,11 +68,32 @@ def add_schedule():
     days = ','.join(chosen) if chosen else ','.join(WEEK)             # nothing ticked = every day
     # the form ticks "runs on public holidays" by default; a request without any day choices means a normal daily service
     holidays = 'runs_on_holidays' in request.form or not request.form.getlist('days')
-    return run(lambda: execute(
-        "INSERT INTO Schedule (RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency, ServiceDays, RunsOnHolidays) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-        [val('route_id'), val('vehicle_id'), val('departure'), val('arrival'), opt('frequency'), days, holidays]),
-        'Schedule added.', 'routes')
+    # AddSchedule inserts the departure and its ScheduleDay rows in one transaction
+    return run(lambda: query_proc('AddSchedule', [val('route_id'), val('vehicle_id'), val('departure'), val('arrival'),
+                                                  opt('frequency'), days, holidays]),
+               'Schedule added.', 'routes')
+
+
+@app.route('/swaps/add', methods=['POST'])
+def add_swap():
+    """Admin: another vehicle runs one trip (a departure on one date); the CheckVehicleSwap trigger decides if it can."""
+    day = date_arg(val('travel_date'))
+    if not (val('s_id').isdigit() and val('vehicle_id').isdigit() and day and val('reason')):
+        flash('Choose a departure, a date, a replacement vehicle and give a reason.', 'danger')
+        return redirect(url_for('routes'))
+    return run(lambda: execute("INSERT INTO VehicleSwap (ScheduleID, TravelDate, VehicleID, Reason) VALUES (%s, %s, %s, %s)",
+                               (val('s_id'), day, val('vehicle_id'), val('reason'))),
+               f'Departure #{val("s_id")} uses another vehicle on {day:%d %b %Y}.', 'routes')
+
+
+@app.route('/swaps/<int:sid>/<day>/delete', methods=['POST'])
+def delete_swap(sid, day):
+    parsed = date_arg(day)
+    if not parsed:
+        flash('Unknown vehicle swap.', 'danger')
+        return redirect(url_for('routes'))
+    return run(lambda: execute("DELETE FROM VehicleSwap WHERE ScheduleID = %s AND TravelDate = %s", (sid, parsed)),
+               'Vehicle swap removed; the scheduled vehicle runs that trip again.', 'routes')
 
 
 @app.route('/schedules/<int:sid>/delete', methods=['POST'])

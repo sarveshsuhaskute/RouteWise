@@ -18,7 +18,7 @@
             <div><span>Arrives</span><b>{{ t.ArrivalTime | fmt }}</b></div>
             <div><span>Seat</span><b>{{ t.SeatNo }}{% if t.Position %} <small>({{ t.Position | lower }})</small>{% endif %}</b></div>
             <div><span>Fare</span><b>{{ t.Fare | money }}</b></div>
-            <div><span>Travel card</span><b>{{ t.CardType }}</b></div>
+            <div><span>Paid by</span><b>{{ t.PaidBy or '—' }}</b></div>
             <div><span>Ticket no.</span><b>#{{ t.TicketID }}</b></div>
         </div>
         <div class="eticket-foot">Booked {{ t.BookingDate | fmt }} · valid only for this departure, date and seat</div>

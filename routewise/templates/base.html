@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body data-role="{{ role or '' }}">
+<a class="skip-link" href="#main">Skip to content</a>
 {% from '_logo.html' import logo %}
 {% set nav = [
     ('index', 'Dashboard', 'speedometer2'),
@@ -44,14 +45,14 @@
             </ul>
             <form class="ms-xl-3 mt-2 mt-xl-0 d-flex align-items-center gap-2" method="POST" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <span class="small text-white-50"><i class="bi bi-person-circle me-1"></i><a href="{{ url_for('account') }}" class="text-white-50 text-decoration-none" title="My account: {{ current_user.name }}">{{ current_user.username }}</a> <span class="pill pill-grey">{{ role }}</span></span>
-                <button class="btn btn-sm btn-outline-light" title="Sign out"><i class="bi bi-box-arrow-right"></i></button>
+                <button class="btn btn-sm btn-outline-light" title="Sign out" aria-label="Sign out"><i class="bi bi-box-arrow-right"></i></button>
             </form>
         </div>
     </div>
 </nav>
 {% endif %}
 
-<main class="container pb-4">
+<main class="container pb-4" id="main" tabindex="-1">
     <div class="pt-3">
         {% if weak_password and request.endpoint != 'account' %}
         <div class="alert alert-warning d-flex align-items-center gap-2 shadow-sm" role="alert">

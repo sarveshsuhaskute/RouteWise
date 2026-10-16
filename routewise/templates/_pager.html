@@ -17,7 +17,7 @@
 {% macro searchbox(endpoint, q, placeholder) %}
 <form method="GET" action="{{ url_for(endpoint) }}" class="d-flex gap-2">
     <input type="search" name="q" value="{{ q }}" class="form-control form-control-sm search" placeholder="{{ placeholder }}" aria-label="Search">
-    <button class="btn btn-sm btn-outline-secondary" title="Search"><i class="bi bi-search"></i></button>
-    {% if q %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for(endpoint) }}" title="Clear search"><i class="bi bi-x-lg"></i></a>{% endif %}
+    <button class="btn btn-sm btn-outline-secondary" title="Search" aria-label="Search"><i class="bi bi-search"></i></button>
+    {% if q %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for(endpoint) }}" title="Clear search" aria-label="Clear search"><i class="bi bi-x-lg"></i></a>{% endif %}
 </form>
 {% endmacro %}

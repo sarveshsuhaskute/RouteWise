@@ -47,10 +47,16 @@
                     <input type="text" name="seat" class="form-control seat-input" placeholder="pick on the map, e.g. 7C" maxlength="4"
                            pattern="[1-9][0-9]{0,2}[A-Fa-f]" title="A seat label such as 7C" required>
                 </div>
+                <div class="row g-2">
+                    <div class="col-5"><label class="form-label" for="pay_method">Paid by</label>
+                        <select name="pay_method" id="pay_method" class="form-select"><option>Cash</option><option>UPI</option><option>Card</option></select></div>
+                    <div class="col-7"><label class="form-label" for="pay_ref">Reference <span class="fw-normal">· optional</span></label>
+                        <input name="pay_ref" id="pay_ref" class="form-control" maxlength="40" placeholder="UPI txn id / card last 4"></div>
+                </div>
                 <div class="seat-legend small text-muted">
                     <span><i class="seat-dot free"></i>free</span><span><i class="seat-dot taken"></i>taken</span><span><i class="seat-dot held"></i>held by a colleague</span><span><i class="seat-dot picked"></i>your pick (held 5 min)</span><span><i class="seat-dot window"></i>window</span>
                 </div>
-                <div class="small" data-seathint>&nbsp;</div>
+                <div class="small" data-seathint aria-live="polite">&nbsp;</div>
                 <button class="btn btn-brand mt-auto"><i class="bi bi-check2 me-1"></i>Book ticket</button>
             </div>
         </form>
@@ -70,12 +76,12 @@
                 <td>{{ b.DepartureTime | fmt }}</td><td>{{ b.TravelDate | fmt }}</td><td><span class="pill pill-blue">{{ b.SeatNo }}</span></td>
                 <td>{{ b.Fare | money }}</td><td class="text-muted small">{{ b.BookingDate | fmt }}</td>
                 <td class="text-end text-nowrap">
-                    <a class="btn btn-sm btn-outline-secondary" title="E-ticket with QR code" href="{{ url_for('e_ticket', ticket_id=b.TicketID) }}"><i class="bi bi-qr-code"></i></a>
+                    <a class="btn btn-sm btn-outline-secondary" title="E-ticket with QR code" href="{{ url_for('e_ticket', ticket_id=b.TicketID) }}" aria-label="E-ticket with QR code"><i class="bi bi-qr-code"></i></a>
                     {% if role in ('staff', 'admin') %}
                     <button type="button" class="btn btn-sm btn-outline-secondary w-staff" title="Move to another departure, seat or day" data-edit="transferModal"
-                        data-action="{{ url_for('transfer_ticket', ticket_id=b.TicketID) }}" data-fields='{{ {"travel_date": b.TravelDate.isoformat() if b.TravelDate else ""} | tojson | forceescape }}'><i class="bi bi-arrow-left-right"></i></button>
+                        data-action="{{ url_for('transfer_ticket', ticket_id=b.TicketID) }}" data-fields='{{ {"travel_date": b.TravelDate.isoformat() if b.TravelDate else ""} | tojson | forceescape }}' aria-label="Move to another departure, seat or day"><i class="bi bi-arrow-left-right"></i></button>
                     <form class="d-inline w-staff" action="{{ url_for('cancel_ticket', ticket_id=b.TicketID) }}" method="POST" data-confirm="Cancel ticket #{{ b.TicketID }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button class="btn btn-sm btn-outline-danger" title="Cancel ticket"><i class="bi bi-x-lg"></i></button>
+                        <button class="btn btn-sm btn-outline-danger" title="Cancel ticket" aria-label="Cancel ticket"><i class="bi bi-x-lg"></i></button>
                     </form>
                     {% endif %}
                 </td>
@@ -98,7 +104,7 @@
         <div class="col-md-4"><label class="form-label">Travel date</label><input type="date" name="travel_date" class="form-control" min="{{ today }}" max="{{ last_day }}"></div>
         <div class="col-12"><div class="seatmap-wrap"><div class="seatmap" data-seatmap></div></div></div>
         <div class="col-md-4"><label class="form-label">New seat</label><input name="seat" class="form-control seat-input" maxlength="4" pattern="[1-9][0-9]{0,2}[A-Fa-f]" required placeholder="e.g. 7C"></div>
-        <div class="col-md-8 d-flex align-items-end"><div class="small" data-seathint></div></div>
+        <div class="col-md-8 d-flex align-items-end"><div class="small" data-seathint aria-live="polite"></div></div>
     </div></div>
     <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button class="btn btn-brand">Transfer</button></div>
 </form></div></div>
