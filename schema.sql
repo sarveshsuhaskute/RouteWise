@@ -1,9 +1,9 @@
 -- =====================================================================
---  RouteWise - Public Transport Management System  -  MySQL 8+ schema (version 3)
+--  RouteWise - Public Transport Management System  -  MySQL 8+ schema (version 4)
 --  Import in MySQL Workbench, or:  mysql -u root -p < schema.sql
 --  The script is re-runnable: tables use IF NOT EXISTS, programmable
 --  objects are dropped and recreated, seed data is only added once.
---  Upgrading an existing version-1 or version-2 database without losing data: scripts/migrate.py
+--  Upgrading an existing version-1, 2 or 3 database without losing data: scripts/migrate.py
 --
 --  Functional dependencies (every relation is in BCNF: each determinant is a candidate key)
 --    FareRule   : RouteType -> all     CardDiscount: CardType -> all
@@ -15,8 +15,9 @@
 --    Schedule   : ScheduleID -> all;   (VehicleID, DepartureTime) -> all
 --    Holiday    : HolidayDate -> Name
 --    Ticket     : TicketID -> all;     (ScheduleID, TravelDate, SeatNo) -> all
+--    SeatHold   : (ScheduleID, TravelDate, SeatNo) -> HeldBy, ExpiresAt
 --    Feedback   : FeedbackID -> all
---    TicketAudit: AuditID -> all       AppUser: UserID -> all;  Username -> all
+--    TicketAudit: (AuditID, ActionTime) -> all        AppUser: UserID -> all;  Username -> all
 --    LoginAttempt: (Username, Address) -> all            SchemaVersion: Version -> all
 -- =====================================================================
 -- every script declares its character set, so the result does not depend on the client that runs it
@@ -149,6 +150,22 @@ CREATE TABLE IF NOT EXISTS Ticket (
     FOREIGN KEY (ScheduleID)  REFERENCES Schedule(ScheduleID)
 );
 
+-- [v4 tables] (migrations/make_0004.py copies the definitions between these markers into the upgrade)
+-- A seat a clerk has picked on the seat map but not booked yet. Other clerks cannot book it until the hold
+-- expires (5 minutes); the PurgeSeatHolds event deletes expired holds every minute. Written only by HoldSeat and triggers.
+CREATE TABLE IF NOT EXISTS SeatHold (
+    ScheduleID INT         NOT NULL,
+    TravelDate DATE        NOT NULL,
+    SeatNo     VARCHAR(10) NOT NULL,
+    HeldBy     VARCHAR(50) NOT NULL,
+    ExpiresAt  DATETIME    NOT NULL,
+    PRIMARY KEY (ScheduleID, TravelDate, SeatNo),
+    KEY idx_hold_user (HeldBy),
+    KEY idx_hold_expiry (ExpiresAt),
+    CONSTRAINT fk_hold_schedule FOREIGN KEY (ScheduleID) REFERENCES Schedule(ScheduleID) ON DELETE CASCADE
+);
+-- [end v4 tables]
+
 CREATE TABLE IF NOT EXISTS Feedback (
     FeedbackID   INT AUTO_INCREMENT PRIMARY KEY,
     PassengerID  INT NOT NULL,
@@ -174,8 +191,11 @@ CREATE TABLE IF NOT EXISTS AppUser (
 
 -- Written to by triggers only: a permanent history of bookings/cancellations and WHO did them
 -- (Actor is the application user set by the application for the session, otherwise the database user).
+-- The history only grows, so it is PARTITIONED by quarter: queries on a period read only its partitions
+-- (partition pruning), and old quarters can be archived or dropped in one step. It has no foreign keys,
+-- which is what makes partitioning possible in InnoDB. ExtendAuditPartitions adds future quarters.
 CREATE TABLE IF NOT EXISTS TicketAudit (
-    AuditID     INT AUTO_INCREMENT PRIMARY KEY,
+    AuditID     INT AUTO_INCREMENT,
     TicketID    INT NOT NULL,
     Action      VARCHAR(20) NOT NULL,
     PassengerID INT NOT NULL,
@@ -183,8 +203,21 @@ CREATE TABLE IF NOT EXISTS TicketAudit (
     TravelDate  DATE NULL,
     SeatNo      VARCHAR(10) NOT NULL,
     Fare        DECIMAL(6,2) NOT NULL,
-    ActionTime  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    Actor       VARCHAR(50) NULL
+    ActionTime  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Actor       VARCHAR(50) NULL,
+    PRIMARY KEY (AuditID, ActionTime)            -- the partitioning column must be part of every unique key
+)
+PARTITION BY RANGE (UNIX_TIMESTAMP(ActionTime)) (
+    PARTITION p_before_2026 VALUES LESS THAN (UNIX_TIMESTAMP('2026-01-01 00:00:00')),
+    PARTITION p2026q1 VALUES LESS THAN (UNIX_TIMESTAMP('2026-04-01 00:00:00')),
+    PARTITION p2026q2 VALUES LESS THAN (UNIX_TIMESTAMP('2026-07-01 00:00:00')),
+    PARTITION p2026q3 VALUES LESS THAN (UNIX_TIMESTAMP('2026-10-01 00:00:00')),
+    PARTITION p2026q4 VALUES LESS THAN (UNIX_TIMESTAMP('2027-01-01 00:00:00')),
+    PARTITION p2027q1 VALUES LESS THAN (UNIX_TIMESTAMP('2027-04-01 00:00:00')),
+    PARTITION p2027q2 VALUES LESS THAN (UNIX_TIMESTAMP('2027-07-01 00:00:00')),
+    PARTITION p2027q3 VALUES LESS THAN (UNIX_TIMESTAMP('2027-10-01 00:00:00')),
+    PARTITION p2027q4 VALUES LESS THAN (UNIX_TIMESTAMP('2028-01-01 00:00:00')),
+    PARTITION pmax    VALUES LESS THAN MAXVALUE
 );
 
 -- Which version of this schema a database is at (managed by schema.sql and scripts/migrate.py).
@@ -339,14 +372,29 @@ FROM Vehicle
 WHERE Status = 'Active'
 WITH CHECK OPTION;
 
+-- Today's departure board: every departure that runs today, with a status worked out from the timetable and the clock.
+CREATE OR REPLACE VIEW DepartureBoard AS
+SELECT S.ScheduleID, R.RouteName, R.Origin, R.Destination, V.VehicleNo, S.DepartureTime, S.ArrivalTime,
+       CASE WHEN V.Status <> 'Active'                              THEN 'Cancelled'
+            WHEN CURTIME() < SUBTIME(S.DepartureTime, '00:10:00')  THEN 'Scheduled'
+            WHEN CURTIME() < S.DepartureTime                       THEN 'Boarding'
+            WHEN CURTIME() < S.ArrivalTime                         THEN 'En route'
+            ELSE 'Arrived' END                                     AS Status,
+       SeatsLeft(S.ScheduleID, CURDATE())                          AS SeatsLeft
+FROM Schedule S
+JOIN Route   R ON R.RouteID   = S.RouteID
+JOIN Vehicle V ON V.VehicleID = S.VehicleID
+WHERE RunsOn(S.ScheduleID, CURDATE());
+
 -- ---------------------------------------------------------------------
 --  5. PROCEDURES
 -- ---------------------------------------------------------------------
--- Builds the seat map of a vehicle: p_capacity seats, p_per_row to a row, labelled 1A, 1B, ...
+-- Builds the seat map of a vehicle: p_capacity seats, p_per_row to a row, labelled 1A, 1B, ... (called by triggers)
 -- The outer columns are window seats, the two middle columns aisle seats, the rest middle seats.
 DROP PROCEDURE IF EXISTS GenerateSeats;
 DELIMITER $$
 CREATE PROCEDURE GenerateSeats(IN p_vehicle INT, IN p_capacity INT, IN p_per_row INT)
+SQL SECURITY INVOKER         -- runs with the caller's rights: the CreateSeats/ResizeSeats triggers may, the app user may not
 BEGIN
     INSERT INTO Seat (VehicleID, SeatNo, Position)
     WITH RECURSIVE seq (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < p_capacity)
@@ -422,6 +470,64 @@ BEGIN
 END$$
 DELIMITER ;
 
+-- Holds a seat for a clerk for p_minutes while the booking is completed. One hold per clerk: picking another
+-- seat releases the previous one. Runs with its definer's rights, because the application may not write SeatHold itself.
+DROP PROCEDURE IF EXISTS HoldSeat;
+DELIMITER $$
+CREATE PROCEDURE HoldSeat(IN p_schedule INT, IN p_date DATE, IN p_seat VARCHAR(10), IN p_user VARCHAR(50), IN p_minutes INT)
+BEGIN
+    DECLARE v_lock INT;
+    -- the same lock as a booking takes, so a hold and a booking for one departure never interleave
+    SELECT ScheduleID INTO v_lock FROM Schedule WHERE ScheduleID = p_schedule FOR UPDATE;
+    IF v_lock IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Unknown departure.';
+    ELSEIF p_minutes NOT BETWEEN 1 AND 30 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: A hold lasts 1 to 30 minutes.';
+    ELSEIF RunsOn(p_schedule, p_date) = FALSE THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: This departure does not run on that date.';
+    ELSEIF NOT EXISTS (SELECT 1 FROM Schedule S JOIN Seat ST ON ST.VehicleID = S.VehicleID
+                       WHERE S.ScheduleID = p_schedule AND ST.SeatNo = p_seat) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: No such seat on this vehicle.';
+    ELSEIF EXISTS (SELECT 1 FROM Ticket WHERE ScheduleID = p_schedule AND TravelDate = p_date AND SeatNo = p_seat) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seat already booked.';
+    END IF;
+    DELETE FROM SeatHold WHERE ScheduleID = p_schedule AND TravelDate = p_date AND SeatNo = p_seat AND ExpiresAt <= NOW();
+    IF EXISTS (SELECT 1 FROM SeatHold WHERE ScheduleID = p_schedule AND TravelDate = p_date AND SeatNo = p_seat
+               AND HeldBy <> p_user) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seat is held by another clerk.';
+    END IF;
+    DELETE FROM SeatHold WHERE HeldBy = p_user
+        AND NOT (ScheduleID = p_schedule AND TravelDate = p_date AND SeatNo = p_seat);
+    INSERT INTO SeatHold (ScheduleID, TravelDate, SeatNo, HeldBy, ExpiresAt)
+    VALUES (p_schedule, p_date, p_seat, p_user, NOW() + INTERVAL p_minutes MINUTE)
+    ON DUPLICATE KEY UPDATE ExpiresAt = VALUES(ExpiresAt);
+END$$
+DELIMITER ;
+
+-- Partition maintenance: adds quarterly partitions to TicketAudit (by splitting pmax) until the table has named
+-- partitions for at least p_months_ahead months. Called every month by the MaintainAuditPartitions event.
+-- Runs with the CALLER's rights: the event may change the table, the application user may not.
+DROP PROCEDURE IF EXISTS ExtendAuditPartitions;
+DELIMITER $$
+CREATE PROCEDURE ExtendAuditPartitions(IN p_months_ahead INT)
+SQL SECURITY INVOKER
+BEGIN
+    DECLARE v_last BIGINT;
+    DECLARE v_start DATETIME;
+    extend: LOOP
+        SELECT MAX(CAST(PARTITION_DESCRIPTION AS UNSIGNED)) INTO v_last FROM information_schema.partitions
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'TicketAudit' AND PARTITION_DESCRIPTION <> 'MAXVALUE';
+        SET v_start = FROM_UNIXTIME(v_last);
+        IF v_start >= NOW() + INTERVAL p_months_ahead MONTH THEN
+            LEAVE extend;
+        END IF;
+        SET @ddl = CONCAT('ALTER TABLE TicketAudit REORGANIZE PARTITION pmax INTO (PARTITION p', YEAR(v_start), 'q', QUARTER(v_start),
+                          ' VALUES LESS THAN (UNIX_TIMESTAMP(''', v_start + INTERVAL 3 MONTH, ''')), PARTITION pmax VALUES LESS THAN MAXVALUE)');
+        PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+    END LOOP;
+END$$
+DELIMITER ;
+
 -- Cursor example: row-by-row scoring of every route with a NOT FOUND handler, returned as a result set.
 -- Score = revenue / 10 + average rating x 10;  grade A >= 60, B >= 50, otherwise C.
 DROP PROCEDURE IF EXISTS RouteScorecard;
@@ -464,7 +570,7 @@ DELIMITER ;
 --  6. TRIGGERS
 -- ---------------------------------------------------------------------
 -- Ticket checks run in this order: 6a -> 6b -> 6c -> 6d (FOLLOWS), then the CHECK constraints and keys.
--- 6a. Reject a seat that is already booked on the same trip (schedule + travel date)
+-- 6a. Reject a seat that is already booked on the same trip (schedule + travel date) or held by another clerk
 DROP TRIGGER IF EXISTS PreventDoubleSeat;
 DELIMITER $$
 CREATE TRIGGER PreventDoubleSeat BEFORE INSERT ON Ticket FOR EACH ROW
@@ -475,6 +581,11 @@ BEGIN
     SELECT ScheduleID INTO v_lock FROM Schedule WHERE ScheduleID = NEW.ScheduleID FOR UPDATE;
     IF EXISTS (SELECT 1 FROM Ticket WHERE ScheduleID = NEW.ScheduleID AND TravelDate = NEW.TravelDate AND SeatNo = NEW.SeatNo) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seat already booked.';
+    END IF;
+    -- a seat another clerk is holding on the seat map is not for sale until the hold is used or expires
+    IF EXISTS (SELECT 1 FROM SeatHold WHERE ScheduleID = NEW.ScheduleID AND TravelDate = NEW.TravelDate AND SeatNo = NEW.SeatNo
+               AND ExpiresAt > NOW() AND HeldBy <> COALESCE(@actor, SUBSTRING_INDEX(USER(), '@', 1))) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seat is held by another clerk for a few minutes.';
     END IF;
 END$$
 DELIMITER ;
@@ -570,6 +681,15 @@ BEGIN
 END$$
 DELIMITER ;
 
+-- 6k. A booked seat no longer needs its hold
+DROP TRIGGER IF EXISTS ReleaseHold;
+DELIMITER $$
+CREATE TRIGGER ReleaseHold AFTER INSERT ON Ticket FOR EACH ROW FOLLOWS AuditBooking
+BEGIN
+    DELETE FROM SeatHold WHERE ScheduleID = NEW.ScheduleID AND TravelDate = NEW.TravelDate AND SeatNo = NEW.SeatNo;
+END$$
+DELIMITER ;
+
 -- 6i/6j. The seat map follows the vehicle: created with it, rebuilt when its capacity or layout changes.
 -- A change that would remove a seat booked for today or later is refused (the whole UPDATE is undone).
 DROP TRIGGER IF EXISTS CreateSeats;
@@ -597,17 +717,29 @@ END$$
 DELIMITER ;
 
 -- ---------------------------------------------------------------------
---  7. SCHEDULED EVENT: forget failed sign-ins after a day (runs inside MySQL; event_scheduler is ON by default)
+--  7. SCHEDULED EVENTS (run inside MySQL; event_scheduler is ON by default in MySQL 8)
 -- ---------------------------------------------------------------------
+-- forget failed sign-ins after a day
 DROP EVENT IF EXISTS PurgeLoginAttempts;
 CREATE EVENT PurgeLoginAttempts ON SCHEDULE EVERY 1 HOUR
 DO DELETE FROM LoginAttempt WHERE FirstFailure < NOW() - INTERVAL 1 DAY;
+
+-- release seats whose hold has expired
+DROP EVENT IF EXISTS PurgeSeatHolds;
+CREATE EVENT PurgeSeatHolds ON SCHEDULE EVERY 1 MINUTE
+DO DELETE FROM SeatHold WHERE ExpiresAt <= NOW();
+
+-- keep at least six months of named partitions ahead in the audit table
+DROP EVENT IF EXISTS MaintainAuditPartitions;
+CREATE EVENT MaintainAuditPartitions ON SCHEDULE EVERY 1 MONTH
+DO CALL ExtendAuditPartitions(6);
 
 -- ---------------------------------------------------------------------
 --  8. DATABASE USER FOR THE APPLICATION (least privilege)
 --  The web application connects as 'routewise_app', never as root. It may read and change business data,
 --  call the stored routines and read the views, but it cannot create or drop objects, it can only READ
---  the audit table and the seat map (triggers, which run with their definer's rights, write those).
+--  the audit table, the seat map and the seat holds (triggers and HoldSeat, which run with their definer's
+--  rights, write those). GenerateSeats and ExtendAuditPartitions run with the caller's rights, so the app cannot use them.
 --  Demo password: change it with scripts/set_app_password.sh before any real use.
 -- ---------------------------------------------------------------------
 CREATE USER IF NOT EXISTS 'routewise_app'@'localhost' IDENTIFIED BY 'routewise_app_pw';
@@ -624,6 +756,7 @@ GRANT SELECT, INSERT, DELETE ON public_transport.Holiday       TO 'routewise_app
 GRANT SELECT, UPDATE ON public_transport.FareRule      TO 'routewise_app'@'localhost';
 GRANT SELECT, UPDATE ON public_transport.CardDiscount  TO 'routewise_app'@'localhost';
 GRANT SELECT ON public_transport.Seat              TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.SeatHold          TO 'routewise_app'@'localhost';
 GRANT SELECT ON public_transport.SchemaVersion     TO 'routewise_app'@'localhost';
 GRANT SELECT ON public_transport.TicketAudit       TO 'routewise_app'@'localhost';
 GRANT SELECT ON public_transport.BookingSummary    TO 'routewise_app'@'localhost';
@@ -632,6 +765,7 @@ GRANT SELECT ON public_transport.TripOccupancy     TO 'routewise_app'@'localhost
 GRANT SELECT ON public_transport.RouteRevenue      TO 'routewise_app'@'localhost';
 GRANT SELECT ON public_transport.RouteRatings      TO 'routewise_app'@'localhost';
 GRANT SELECT ON public_transport.ActiveVehicle     TO 'routewise_app'@'localhost';
+GRANT SELECT ON public_transport.DepartureBoard    TO 'routewise_app'@'localhost';
 GRANT EXECUTE ON public_transport.* TO 'routewise_app'@'localhost';
 
 -- ---------------------------------------------------------------------
@@ -738,8 +872,9 @@ SELECT * FROM (
 ) AS f
 WHERE NOT EXISTS (SELECT 1 FROM Feedback);
 
--- A fresh install already contains everything up to version 3.
+-- A fresh install already contains everything up to version 4.
 INSERT IGNORE INTO SchemaVersion (Version, Name) VALUES
 (1, 'baseline: bookings, audit trail, roles, least-privilege user'),
 (2, 'travel dates, fare rules, type check, audit actor, schema versioning'),
-(3, 'seat map, service days and holidays, full-text search, stored sign-in limit');
+(3, 'seat map, service days and holidays, full-text search, stored sign-in limit'),
+(4, 'seat holds, partitioned audit trail, departure board, invoker-rights maintenance routines');

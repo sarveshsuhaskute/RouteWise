@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block title %}Departure board{% endblock %}
+{% block content %}
+<meta http-equiv="refresh" content="60">
+<div class="page-head">
+    <div><h1>Departure board</h1><p>Every departure running today ({{ today | fmt }}), from the <code>DepartureBoard</code> view. Refreshes every minute.</p></div>
+</div>
+<div class="board">
+    <div class="board-row board-head"><span>Time</span><span>Route</span><span>To</span><span>Vehicle</span><span>Seats left</span><span>Status</span></div>
+    {% for r in rows %}
+    <div class="board-row status-{{ r.Status | lower | replace(' ', '-') }}">
+        <span class="board-time">{{ r.DepartureTime | fmt }}</span><span>{{ r.RouteName }}</span><span>{{ r.Destination }}</span>
+        <span>{{ r.VehicleNo }}</span><span>{{ r.SeatsLeft }}</span><span class="board-status">{{ r.Status }}</span>
+    </div>
+    {% else %}
+    <div class="board-row"><span>No departures run today.</span></div>
+    {% endfor %}
+</div>
+{% endblock %}

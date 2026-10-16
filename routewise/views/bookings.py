@@ -4,10 +4,11 @@ import io
 import math
 from datetime import date, timedelta
 
-from flask import Response, flash, jsonify, redirect, render_template, request, url_for
+import mysql.connector
+from flask import Response, flash, jsonify, redirect, render_template, request, session, url_for
 
 from .. import app
-from ..db import call, query
+from ..db import call, friendly_error, query
 from ..search import SEAT, VEHICLE, boolean_query, like, prefix
 from ..web import csv_safe, date_arg, fmt, page_info, run, val
 
@@ -110,13 +111,33 @@ def api_seats():
                     FROM Schedule S JOIN Vehicle V ON V.VehicleID = S.VehicleID WHERE S.ScheduleID = %s""", (day, day, s))
     if not info:
         return jsonify(left=None)
-    seats = query("""SELECT ST.SeatNo, ST.Position, T.TicketID IS NOT NULL AS Taken
+    me = session['user']['username']
+    seats = query("""SELECT ST.SeatNo, ST.Position, T.TicketID IS NOT NULL AS Taken, H.HeldBy
                      FROM Schedule S JOIN Seat ST ON ST.VehicleID = S.VehicleID
                      LEFT JOIN Ticket T ON T.ScheduleID = S.ScheduleID AND T.TravelDate = %s AND T.SeatNo = ST.SeatNo
-                     WHERE S.ScheduleID = %s ORDER BY LENGTH(ST.SeatNo), ST.SeatNo""", (day, s))
+                     LEFT JOIN SeatHold H ON H.ScheduleID = S.ScheduleID AND H.TravelDate = %s AND H.SeatNo = ST.SeatNo
+                                         AND H.ExpiresAt > NOW()
+                     WHERE S.ScheduleID = %s ORDER BY LENGTH(ST.SeatNo), ST.SeatNo""", (day, day, s))
     i = info[0]
     return jsonify(left=i['left_'], capacity=i['Capacity'], per_row=i['SeatsPerRow'], runs=bool(i['runs']),
-                   seats=[{'no': r['SeatNo'], 'pos': r['Position'], 'taken': bool(r['Taken'])} for r in seats])
+                   seats=[{'no': r['SeatNo'], 'pos': r['Position'], 'taken': bool(r['Taken']),
+                           'held': bool(r['HeldBy']) and r['HeldBy'] != me, 'mine': r['HeldBy'] == me} for r in seats])
+
+
+HOLD_MINUTES = 5
+
+
+@app.route('/api/hold', methods=['POST'])
+def hold_seat():
+    """Hold the seat a clerk clicked on the seat map for a few minutes (HoldSeat procedure), so nobody else sells it."""
+    s, seat, day = val('s_id'), val('seat').upper(), date_arg(val('travel_date'))
+    if not s.isdigit() or not seat or not day:
+        return jsonify(ok=False, message='Choose a departure, a date and a seat.'), 400
+    try:
+        call('HoldSeat', [s, day, seat, session['user']['username'], HOLD_MINUTES])
+    except mysql.connector.Error as err:
+        return jsonify(ok=False, message=friendly_error(err)), 409
+    return jsonify(ok=True, message=f'Seat {seat} is held for you for {HOLD_MINUTES} minutes.')
 
 
 @app.route('/api/fare')

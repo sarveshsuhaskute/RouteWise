@@ -9,6 +9,9 @@ Released migrations never change: 0002 was generated the same way from the versi
     python migrations/make_0003.py
 """
 import os
+import sys
+
+sys.exit("0003 is released and frozen: it was generated from the version-3 schema. New changes go into a new migration.")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 schema = open(os.path.join(HERE, '..', 'schema.sql')).read()

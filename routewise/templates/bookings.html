@@ -48,7 +48,7 @@
                            pattern="[1-9][0-9]{0,2}[A-Fa-f]" title="A seat label such as 7C" required>
                 </div>
                 <div class="seat-legend small text-muted">
-                    <span><i class="seat-dot free"></i>free</span><span><i class="seat-dot taken"></i>taken</span><span><i class="seat-dot picked"></i>your pick</span><span><i class="seat-dot window"></i>window</span>
+                    <span><i class="seat-dot free"></i>free</span><span><i class="seat-dot taken"></i>taken</span><span><i class="seat-dot held"></i>held by a colleague</span><span><i class="seat-dot picked"></i>your pick (held 5 min)</span><span><i class="seat-dot window"></i>window</span>
                 </div>
                 <div class="small" data-seathint>&nbsp;</div>
                 <button class="btn btn-brand mt-auto"><i class="bi bi-check2 me-1"></i>Book ticket</button>
@@ -70,6 +70,7 @@
                 <td>{{ b.DepartureTime | fmt }}</td><td>{{ b.TravelDate | fmt }}</td><td><span class="pill pill-blue">{{ b.SeatNo }}</span></td>
                 <td>{{ b.Fare | money }}</td><td class="text-muted small">{{ b.BookingDate | fmt }}</td>
                 <td class="text-end text-nowrap">
+                    <a class="btn btn-sm btn-outline-secondary" title="E-ticket with QR code" href="{{ url_for('e_ticket', ticket_id=b.TicketID) }}"><i class="bi bi-qr-code"></i></a>
                     {% if role in ('staff', 'admin') %}
                     <button type="button" class="btn btn-sm btn-outline-secondary w-staff" title="Move to another departure, seat or day" data-edit="transferModal"
                         data-action="{{ url_for('transfer_ticket', ticket_id=b.TicketID) }}" data-fields='{{ {"travel_date": b.TravelDate.isoformat() if b.TravelDate else ""} | tojson | forceescape }}'><i class="bi bi-arrow-left-right"></i></button>

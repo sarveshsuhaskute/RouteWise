@@ -60,6 +60,24 @@
     </div>
 </div>
 
+<div class="row g-3 mb-3"><div class="col-12">
+<div class="card">
+    <div class="card-header"><span><i class="bi bi-signpost-2 me-2"></i>Departures now</span>
+        <a href="{{ url_for('departure_board') }}" class="small text-decoration-none">Full departure board →</a></div>
+    <div class="table-wrap"><table class="table table-hover align-middle">
+        <thead><tr><th>Departs</th><th>Route</th><th>To</th><th>Vehicle</th><th>Seats left</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for d in departures %}
+            <tr><td class="fw-semibold">{{ d.DepartureTime | fmt }}</td><td>{{ d.RouteName }}</td><td>{{ d.Destination }}</td><td>{{ d.VehicleNo }}</td><td>{{ d.SeatsLeft }}</td>
+                <td><span class="pill {{ {'Boarding': 'pill-amber', 'En route': 'pill-blue', 'Scheduled': 'pill-grey', 'Cancelled': 'pill-red'}.get(d.Status, 'pill-green') }}">{{ d.Status }}</span></td></tr>
+        {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-4">No more departures today.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+</div>
+</div></div>
+
 <div class="card">
     <div class="card-header"><span><i class="bi bi-clock-history me-2"></i>Recent bookings</span>
         <a href="{{ url_for('bookings') }}" class="small text-decoration-none">View all →</a></div>

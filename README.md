@@ -5,8 +5,8 @@
 A secure, role-based web application for running a city's buses and metro: routes, timetables with service days and
 public holidays, fleet with a seat map per vehicle, drivers, passengers, seat-by-seat ticket booking and feedback.
 The MySQL database does the heavy lifting — constraints, views, functions, stored procedures with transactions and a cursor,
-ten triggers, a scheduled event, FULLTEXT search, data-driven fares, versioned migrations and least-privilege database
-users — and Flask provides the interface.
+eleven triggers, seat holds that expire, three scheduled events, a range-partitioned audit trail, FULLTEXT search,
+data-driven fares, versioned migrations and least-privilege database users — and Flask provides the interface.
 
 ## Tech stack
 - **Frontend:** HTML5, Bootstrap 5, Bootstrap Icons, Chart.js, a small vanilla-JS seat picker
@@ -18,8 +18,10 @@ users — and Flask provides the interface.
 | Page | What it does |
 |---|---|
 | **Login / My account** | Session login, salted password hashes, three roles, a sign-in attempt limit stored in the database, own-password change, a warning while a published demo password is in use |
-| **Dashboard** | KPIs, departures running today, the next public holiday, revenue-by-route chart, busiest trips, recent bookings |
-| **Bookings** | Pick a seat on the **seat map** of the chosen trip (window / aisle / middle, taken seats greyed out), book via `BookTicket`, **transfer** to another departure, seat or day via `TransferTicket` in one transaction, cancel via `CancelTicket`, indexed search, pagination, CSV export |
+| **Dashboard** | KPIs, departures running today, the next public holiday, departures now, revenue-by-route chart, busiest trips, recent bookings |
+| **Bookings** | Pick a seat on the **seat map** of the chosen trip (window / aisle / middle, taken seats greyed out); clicking a seat **holds it for 5 minutes** so a colleague cannot sell it meanwhile; book via `BookTicket`, **transfer** to another departure, seat or day via `TransferTicket` in one transaction, cancel via `CancelTicket`, indexed search, pagination, CSV export |
+| **E-tickets** | A printable e-ticket for every booking with a **signed QR code**; scanning it opens the ticket check, which says *valid today*, *valid for another day*, *expired*, *cancelled* (with who and when, from the audit trail) or *not genuine* |
+| **Departure board** | Every departure running today with its status (Scheduled, Boarding, En route, Arrived, Cancelled) worked out from the timetable by the `DepartureBoard` view; refreshes every minute |
 | **Passengers** | Add / edit / delete, trips and spend per passenger, FULLTEXT search by name or email, phone and number lookup |
 | **Fleet & Drivers** | Vehicles (capacity and **seats per row**, which define the seat map) and drivers, vehicle status (Active / Maintenance / Retired) |
 | **Routes & Schedules** | Routes, departures with their **service days** (e.g. Mon–Fri) and whether they run on public holidays, a **public-holiday calendar**, occupancy today, editable fare rules and card discounts (admin) |
@@ -46,7 +48,11 @@ Permissions are enforced **on the server** for every request; hidden buttons are
 - CSRF token required on every POST; HttpOnly + SameSite session cookies; private pages are not cached
 - All SQL uses parameterised queries (search terms included: FULLTEXT operators typed by a user are stripped); templates auto-escape output; CSV export neutralises spreadsheet formulas
 - **The application connects as a least-privilege database user (`routewise_app`), not root.** It cannot create, alter
-  or drop anything, and it can only *read* the audit table and the seat map — only triggers write to those
+  or drop anything, and it can only *read* the audit table, the seat map and the seat holds — only triggers and the `HoldSeat`
+  procedure write to those. The maintenance routines `GenerateSeats` and `ExtendAuditPartitions` run with the **caller's**
+  rights (`SQL SECURITY INVOKER`), so the triggers and events can use them and the application cannot
+- E-ticket QR codes carry an HMAC signature over the ticket's trip, seat and passenger, so a changed or made-up code is
+  recognised; keep `SECRET_KEY` fixed in `.env`, or codes issued before a restart stop verifying
 - The audit trail records **who** acted: the application tells MySQL the signed-in user for each connection
 - The database password and `SECRET_KEY` live in a git-ignored `.env` file (`scripts/set_app_password.sh` changes the password); debug mode is off by default
 
@@ -58,6 +64,7 @@ erDiagram
     CARDDISCOUNT ||--o{ PASSENGER : "discounts"
     DRIVER   ||--o{ VEHICLE  : "is assigned to"
     VEHICLE  ||--|{ SEAT     : "has (seat map)"
+    SCHEDULE ||--o{ SEATHOLD : "has held seats"
     VEHICLE  ||--o{ SCHEDULE : "runs"
     ROUTE    ||--o{ SCHEDULE : "has"
     SCHEDULE ||--o{ TICKET   : "sells (per travel date)"
@@ -76,8 +83,9 @@ erDiagram
     SCHEDULE  { int ScheduleID PK  int RouteID FK  int VehicleID FK  time DepartureTime  time ArrivalTime  int Frequency  set ServiceDays  bool RunsOnHolidays }
     HOLIDAY   { date HolidayDate PK  varchar Name }
     TICKET    { int TicketID PK  int PassengerID FK  int ScheduleID FK  date TravelDate  varchar SeatNo  decimal Fare  timestamp BookingDate }
+    SEATHOLD  { int ScheduleID PK  date TravelDate PK  varchar SeatNo PK  varchar HeldBy  datetime ExpiresAt }
     FEEDBACK  { int FeedbackID PK  int PassengerID FK  int RouteID FK  int Rating  text Comments  timestamp FeedbackDate }
-    TICKETAUDIT { int AuditID PK  int TicketID  varchar Action  int PassengerID  int ScheduleID  date TravelDate  varchar SeatNo  decimal Fare  timestamp ActionTime  varchar Actor }
+    TICKETAUDIT { int AuditID PK  int TicketID  varchar Action  int PassengerID  int ScheduleID  date TravelDate  varchar SeatNo  decimal Fare  timestamp ActionTime PK  varchar Actor }
     APPUSER   { int UserID PK  varchar Username UK  varchar FullName  varchar PasswordHash  varchar Role }
     LOGINATTEMPT { varchar Username PK  varchar Address PK  int Failures  datetime FirstFailure }
     SCHEMAVERSION { int Version PK  varchar Name  timestamp AppliedAt }
@@ -87,15 +95,16 @@ erDiagram
 ### Database objects
 | Type | Name | Purpose |
 |---|---|---|
-| Tables | 15 (see the diagram) | Reference data (`FareRule`, `CardDiscount`, `Holiday`), transport data, the seat map (`Seat`), `Ticket` per **trip** (schedule + travel date), `TicketAudit`, `AppUser`, `LoginAttempt`, `SchemaVersion` |
-| Views | `BookingSummary`, `ScheduleOccupancy` (today, incl. whether it runs today), `TripOccupancy` (any date), `RouteRevenue`, `RouteRatings`, `ActiveVehicle` | Dashboard and reporting; `ActiveVehicle` is updatable `WITH CHECK OPTION` |
+| Tables | 16 (see the diagram) | Reference data (`FareRule`, `CardDiscount`, `Holiday`), transport data, the seat map (`Seat`), `Ticket` per **trip** (schedule + travel date), `SeatHold`, `TicketAudit`, `AppUser`, `LoginAttempt`, `SchemaVersion` |
+| Partitioning | `TicketAudit` by `RANGE (UNIX_TIMESTAMP(ActionTime))`, one partition per quarter plus `pmax` | The history only grows: a query for one period reads only its partitions (`EXPLAIN` shows the pruning), and a quarter can be archived or dropped in one step. Possible because the table has no foreign keys; the primary key is `(AuditID, ActionTime)` because the partitioning column must belong to every unique key |
+| Views | `BookingSummary`, `ScheduleOccupancy` (today, incl. whether it runs today), `TripOccupancy` (any date), `RouteRevenue`, `RouteRatings`, `ActiveVehicle`, `DepartureBoard` | Dashboard, departure board and reporting; `ActiveVehicle` is updatable `WITH CHECK OPTION` |
 | Functions | `SeatsLeft(schedule, date)`, `CalcFare(passenger, schedule)`, `RunsOn(schedule, date)` | Free seats of a trip; fare = max(MinFare, distance × RatePerKm) minus the card discount, **read from tables**; whether a departure runs on a date (service days and holidays) |
-| Procedures | `BookTicket`, `CancelTicket`, `TransferTicket`, `RouteScorecard`, `GenerateSeats` | Booking with date rules (not in the past, at most 30 days ahead); **transfer as one all-or-nothing transaction** (`START TRANSACTION`, exit handler, `ROLLBACK`); a **cursor** that scores and grades every route; seat-map generation with a recursive CTE |
-| Triggers (10) | `PreventDoubleSeat` → `CheckServiceDay` → `CheckCapacity` → `ValidateSeat` on Ticket (ordered with `FOLLOWS`); `PreventVehicleOverlap`, `CheckVehicleRouteType` on Schedule; `AuditBooking`, `AuditCancellation`; `CreateSeats`, `ResizeSeats` on Vehicle | Reject a taken seat, a day the departure does not run, a full or out-of-service vehicle, a seat the vehicle does not have, overlapping runs, a vehicle on a route of the wrong type; write the audit trail with the actor; keep the seat map in step with the vehicle and refuse a change that would remove a seat booked for an upcoming trip |
-| Event | `PurgeLoginAttempts` (every hour) | Deletes sign-in failures older than a day, inside MySQL |
+| Procedures | `BookTicket`, `CancelTicket`, `TransferTicket`, `HoldSeat`, `RouteScorecard`, `GenerateSeats`, `ExtendAuditPartitions` | Booking with date rules (not in the past, at most 30 days ahead); **transfer as one all-or-nothing transaction** (`START TRANSACTION`, exit handler, `ROLLBACK`); **seat holds** under the same row lock as bookings; a **cursor** that scores and grades every route; seat-map generation with a recursive CTE; partition maintenance with dynamic DDL (`REORGANIZE PARTITION`) |
+| Triggers (11) | `PreventDoubleSeat` → `CheckServiceDay` → `CheckCapacity` → `ValidateSeat` on Ticket (ordered with `FOLLOWS`); `PreventVehicleOverlap`, `CheckVehicleRouteType` on Schedule; `AuditBooking` → `ReleaseHold`, `AuditCancellation`; `CreateSeats`, `ResizeSeats` on Vehicle | Reject a taken seat or one held by another clerk, a day the departure does not run, a full or out-of-service vehicle, a seat the vehicle does not have, overlapping runs, a vehicle on a route of the wrong type; write the audit trail with the actor; release a hold once its seat is booked; keep the seat map in step with the vehicle and refuse a change that would remove a seat booked for an upcoming trip |
+| Events (3) | `PurgeLoginAttempts` (hourly), `PurgeSeatHolds` (every minute), `MaintainAuditPartitions` (monthly) | Housekeeping inside MySQL: old sign-in failures, expired seat holds, and at least six months of future audit partitions |
 | Constraints | 17 `CHECK` (fare, seat label, travel-date window, capacity, seats per row, seat position, service days, rating, times, status, role ...), 11 foreign keys, `UNIQUE (ScheduleID, TravelDate, SeatNo)` | Integrity enforced inside the database |
 | Indexes | B-tree: `Ticket.PassengerID`, `Ticket.TravelDate`, `Schedule.RouteID`, `Schedule.VehicleID`, `Feedback.RouteID`, `Passenger.Phone`, the unique trip-seat key; **FULLTEXT:** `Passenger(Name, Email)`, `Route(RouteName, Origin, Destination)` | Faster joins and search — measured on 200,000 rows (see below) |
-| Privileges | user `routewise_app` | Read/write business tables, update fare rules, manage holidays, **read-only audit table and seat map**, execute routines, nothing else |
+| Privileges | user `routewise_app` | Read/write business tables, update fare rules, manage holidays, **read-only audit table, seat map and seat holds**, execute routines (invoker-rights maintenance routines excepted), nothing else |
 
 ### Normalisation: every relation is in BCNF
 Each non-trivial functional dependency has a candidate key on its left side:
@@ -112,6 +121,7 @@ Each non-trivial functional dependency has a candidate key on its left side:
 | Schedule | ScheduleID → all; (VehicleID, DepartureTime) → all |
 | Holiday | HolidayDate → Name |
 | Ticket | TicketID → all; (ScheduleID, TravelDate, SeatNo) → all |
+| SeatHold | (ScheduleID, TravelDate, SeatNo) → HeldBy, ExpiresAt |
 | Feedback | FeedbackID → all |
 | AppUser | UserID → all; Username → all |
 | LoginAttempt | (Username, Address) → all |
@@ -133,6 +143,8 @@ which would otherwise break BCNF. `TicketAudit` is a history log.
 - `TransferTicket` is a multi-statement transaction: if any step raises an error the handler issues `ROLLBACK`
   and re-raises, so a passenger never ends up with no ticket or with two. Twelve transfers in opposite directions at the same
   moment lose and duplicate nothing (tested).
+- `HoldSeat` takes the same departure lock as a booking, so a hold and a booking for one departure never interleave: a seat can be
+  held by one clerk at a time, booked only by its holder until the hold expires, and the hold disappears with the booking.
 - The sign-in limit uses a single `INSERT … ON DUPLICATE KEY UPDATE`, so two failed attempts at the same moment cannot overwrite each other's count.
 
 ## Setup
@@ -180,13 +192,13 @@ Admin tools use `MYSQL_ADMIN_USER` / `MYSQL_ADMIN_PASSWORD` (default: `root`, em
 
 ### Schema versions and migrations
 A database records its version in `SchemaVersion`. `schema.sql` is always the latest version (a fresh install); files in
-`migrations/` upgrade older databases step by step, and a released migration never changes. `migrations/0003_*.sql` is
-generated by `migrations/make_0003.py`: its structural part is hand-written (new columns, the seat map of every existing
-vehicle, existing tickets relabelled to seats of that map — the k-th ticket of a trip gets the k-th seat), and the new
-tables, indexes, functions, views, procedures, triggers, the event and the grants are copied verbatim from `schema.sql`.
-A test upgrades a version-1 database through versions 2 and 3 and compares **212 schema facts** (columns, indexes, checks,
-foreign keys, triggers, routines, events, views) with a fresh install — they are identical, no ticket or fare is lost and
-every ticket names a real seat. Version 3 also renames the application's database user; `migrate.py` removes the old account
+`migrations/` upgrade older databases step by step, and a released migration never changes (its generator refuses to run
+again). `0003` added the seat map — existing tickets were relabelled to seats of it, the k-th ticket of a trip getting the
+k-th seat — and `0004` (generated by `migrations/make_0004.py`) adds seat holds and turns the audit table into a partitioned
+table. The structural part of each is hand-written; the new tables, indexes, functions, views, procedures, triggers, events
+and grants are copied verbatim from `schema.sql`. A test upgrades a version-1 database through versions 2, 3 and 4 and
+compares **246 schema facts** (columns, indexes, checks, foreign keys, triggers, routines and their security mode, events,
+partitions, views) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat. Version 3 also renames the application's database user; `migrate.py` removes the old account
 only when no other database still uses it.
 
 ### Large sample data and pagination
@@ -211,7 +223,7 @@ Long lists would be unusable at that size, so the application searches and pages
 | Bookings, first page of 24,811 | 50 shown | ≈ 90 ms |
 | Bookings, search "Kumar" (FULLTEXT on passengers and routes) | 1,050 found | ≈ 65 ms |
 | Passengers, search "Kumar" | 127 found | ≈ 19 ms |
-| Seat map of one trip (`/api/seats`) | 60 seats | ≈ 10 ms |
+| Seat map of one trip (`/api/seats`, with holds) | 60 seats | ≈ 10 ms |
 | Reports (13 queries) | 1 page | ≈ 390 ms first view, ≈ 2 ms cached |
 
 ### Index benchmark (200,000 rows, separate database)
@@ -225,8 +237,10 @@ Measured by `scripts/benchmark.py` (mean of 15 runs; numbers vary a little per m
 | Name search: `MATCH … AGAINST` vs `LIKE '%word%'` | 0.16 ms | 41.2 ms | ≈ 257× | `fulltext` on `ft_passenger` → full scan `ALL` |
 
 ## Tests
-94 end-to-end tests, run on every push by GitHub Actions: authentication, roles, CSRF, **the seat map** (generation, layout,
-validation, resizing that never drops a booked seat), **service days and public holidays**, **FULLTEXT search and its query
+103 end-to-end tests, run on every push by GitHub Actions: authentication, roles, CSRF, **the seat map** (generation, layout,
+validation, resizing that never drops a booked seat), **seat holds** (blocking colleagues, one per clerk, expiry, release on
+booking), **e-tickets and their verification** (valid, future, tampered, cancelled, transferred), **partitioning** (layout,
+pruning, automatic extension), the departure board, **service days and public holidays**, **FULLTEXT search and its query
 plans**, trips and travel dates, fare rules, type checks, who-acted audit, booking rules, triggers, fare calculation, CRUD,
 constraints, reports, **transactions and rollback, concurrent bookings and transfers, isolation levels, database privileges,
 the updatable view, window/CTE/cursor reports, the scheduled event, backup and restore round trip, schema migration
@@ -247,8 +261,8 @@ routewise/          the application package
   auth.py           sign-in, roles, CSRF, sign-in limit, own password, users
   search.py         turns search-box input into FULLTEXT / prefix conditions
   web.py            shared request helpers, template filters, error pages
-  views/            one module per page: dashboard, bookings, passengers, fleet, network (routes, schedules,
-                    holidays, fares), feedback, reports
+  views/            one module per page: dashboard, bookings (incl. seat holds), tickets (e-tickets, ticket check,
+                    departure board), passengers, fleet, network (routes, schedules, holidays, fares), feedback, reports
   templates/        Jinja2 pages;  static/  style.css, app.js (seat picker), favicon
 schema.sql          the latest schema: tables, constraints, indexes, functions, views, procedures, triggers, event, privileges, seed data
 migrations/         upgrade scripts for older databases, the generator of the latest one, the version-1 baseline
@@ -259,6 +273,7 @@ tests/              automated test suite;  .github/workflows/  CI
 ```
 
 ## Known limits
-- No online payment, no live vehicle positions (GPS) and no passenger-facing app: these need outside services.
-- A single MySQL server: no replication or automatic failover. Tables are not partitioned (InnoDB partitioning does not support foreign keys, which this design relies on).
+- No live vehicle positions (GPS) and no passenger-facing app: these need outside services. The departure board is worked out from the timetable.
+- A single MySQL server: no replication or automatic failover. Only the audit table is partitioned: InnoDB partitioning does not support foreign keys, which every other large table relies on.
+- No online payment step: the fare is recorded, not collected.
 - Each departure has one vehicle for all its dates; swapping the vehicle for a single day is not modelled.
