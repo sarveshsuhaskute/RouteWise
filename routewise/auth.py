@@ -10,7 +10,7 @@ from .web import PUBLIC_ENDPOINTS, back, run, val
 
 # viewer: read-only | staff: bookings, passengers, feedback | admin: everything (fleet, routes, users)
 ROLES = {'viewer': 0, 'staff': 1, 'admin': 2}
-STAFF_ENDPOINTS = {'book_ticket', 'cancel_ticket', 'transfer_ticket', 'add_passenger', 'edit_passenger', 'add_feedback'}
+STAFF_ENDPOINTS = {'book_ticket', 'cancel_ticket', 'transfer_ticket', 'hold_seat', 'add_passenger', 'edit_passenger', 'add_feedback'}
 ANY_USER_POSTS = {'logout', 'change_password'}      # POSTs every signed-in user may make, whatever the role
 ADMIN_PAGES = {'users'}
 DEMO_USERS = [  # demo accounts created on first start when the AppUser table is empty (unless DEMO_USERS=0)

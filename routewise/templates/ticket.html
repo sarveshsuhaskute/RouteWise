@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %}E-ticket #{{ t.TicketID }}{% endblock %}
+{% block content %}
+<div class="page-head no-print">
+    <div><h1>E-ticket #{{ t.TicketID }}</h1><p>Show the QR code to the conductor; scanning it opens the check page for this ticket.</p></div>
+    <div><button class="btn btn-brand" onclick="window.print()"><i class="bi bi-printer me-1"></i>Print</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('bookings') }}">Back to bookings</a></div>
+</div>
+<div class="eticket">
+    <div class="eticket-main">
+        <div class="eticket-brand">Route<b>Wise</b> <span>e-ticket</span></div>
+        <div class="eticket-route">{{ t.Origin }} <i class="bi bi-arrow-right"></i> {{ t.Destination }}</div>
+        <div class="eticket-sub">{{ t.RouteName }} · {{ t.VehicleNo }}</div>
+        <div class="eticket-grid">
+            <div><span>Passenger</span><b>{{ t.PassengerName }}</b></div>
+            <div><span>Travel date</span><b>{{ t.TravelDate | fmt }}</b></div>
+            <div><span>Departs</span><b>{{ t.DepartureTime | fmt }}</b></div>
+            <div><span>Arrives</span><b>{{ t.ArrivalTime | fmt }}</b></div>
+            <div><span>Seat</span><b>{{ t.SeatNo }}{% if t.Position %} <small>({{ t.Position | lower }})</small>{% endif %}</b></div>
+            <div><span>Fare</span><b>{{ t.Fare | money }}</b></div>
+            <div><span>Travel card</span><b>{{ t.CardType }}</b></div>
+            <div><span>Ticket no.</span><b>#{{ t.TicketID }}</b></div>
+        </div>
+        <div class="eticket-foot">Booked {{ t.BookingDate | fmt }} · valid only for this departure, date and seat</div>
+    </div>
+    <div class="eticket-qr">{{ qr }}<div class="small text-muted mt-1">Scan to verify</div></div>
+</div>
+<p class="small text-muted mt-3 no-print">Verification link: <a href="{{ link }}">{{ link }}</a></p>
+{% endblock %}

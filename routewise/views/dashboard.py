@@ -22,9 +22,11 @@ def index():
     occupancy = query("""SELECT ScheduleID, RouteName, DepartureTime, TravelDate, OccupancyPct, SeatsLeft
                          FROM TripOccupancy ORDER BY OccupancyPct DESC, TravelDate DESC LIMIT 6""")
     recent = query("SELECT * FROM BookingSummary ORDER BY TicketID DESC LIMIT 6")
+    departures = query("""SELECT * FROM DepartureBoard WHERE Status IN ('Boarding', 'En route', 'Scheduled')
+                          ORDER BY FIELD(Status, 'En route', 'Boarding', 'Scheduled'), DepartureTime LIMIT 6""")
     next_holiday = query("SELECT HolidayDate, Name FROM Holiday WHERE HolidayDate >= CURDATE() ORDER BY HolidayDate LIMIT 1")
     return render_template(
-        'dashboard.html', stats=stats, recent=recent, occupancy=occupancy,
+        'dashboard.html', stats=stats, recent=recent, occupancy=occupancy, departures=departures,
         next_holiday=next_holiday[0] if next_holiday else None,
         chart_revenue={'labels': [r['RouteName'] for r in revenue],
                        'values': [float(r['Revenue']) for r in revenue]})

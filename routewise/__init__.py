@@ -14,11 +14,12 @@ def _load_env_file():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
     if not os.path.exists(path):
         return
-    for line in open(path):
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            key, value = line.split('=', 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"\''))
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 
 _load_env_file()
@@ -35,4 +36,4 @@ app.config.update(
 )
 
 from . import web, auth  # noqa: E402,F401  (registers filters, error pages, sign-in and user management)
-from .views import dashboard, bookings, passengers, fleet, network, feedback, reports  # noqa: E402,F401
+from .views import dashboard, bookings, tickets, passengers, fleet, network, feedback, reports  # noqa: E402,F401

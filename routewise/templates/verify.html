@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Ticket check{% endblock %}
+{% block content %}
+{% set look = {
+    'valid':     ('ok',   'patch-check-fill',      'Valid today'),
+    'future':    ('wait', 'calendar-check',        'Valid, but for another day'),
+    'expired':   ('bad',  'clock-history',         'Expired: the travel date has passed'),
+    'cancelled': ('bad',  'x-octagon-fill',        'Cancelled ticket'),
+    'missing':   ('bad',  'question-octagon-fill', 'No such ticket'),
+    'invalid':   ('bad',  'shield-x',              'Not a genuine RouteWise ticket'),
+}[state] %}
+<div class="verify verify-{{ look[0] }} mx-auto">
+    <i class="bi bi-{{ look[1] }}"></i>
+    <h1>{{ look[2] }}</h1>
+    {% if t %}
+    <p class="lead mb-1"><b>{{ t.PassengerName }}</b> · seat <b>{{ t.SeatNo }}</b></p>
+    <p class="mb-0">{{ t.RouteName }} ({{ t.Origin }} → {{ t.Destination }}) · {{ t.VehicleNo }} · departs {{ t.DepartureTime | fmt }} on {{ t.TravelDate | fmt }}</p>
+    {% elif state == 'cancelled' %}
+    <p class="mb-0">Ticket #{{ ticket_id }} was cancelled on {{ audit.ActionTime | fmt }}{% if audit.Actor %} by {{ audit.Actor }}{% endif %} (from the audit trail).</p>
+    {% elif state == 'invalid' %}
+    <p class="mb-0">The code does not match any ticket: it was altered or made up.</p>
+    {% else %}
+    <p class="mb-0">There is no ticket #{{ ticket_id }}.</p>
+    {% endif %}
+</div>
+{% endblock %}

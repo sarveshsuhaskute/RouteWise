@@ -80,8 +80,10 @@ document.querySelectorAll('form[data-seatpicker]').forEach(function (form) {
                 html += '<div class="seat-row"><span class="seat-rowno">' + (i / x.per_row + 1) + '</span>';
                 x.seats.slice(i, i + x.per_row).forEach(function (s, c) {
                     if (c === aisleAfter) html += '<span class="seat-aisle"></span>';
-                    html += '<button type="button" class="seat ' + (s.taken ? 'taken' : 'free') + (s.pos === 'Window' ? ' window' : '') + '" data-no="' + s.no +
-                            '" title="' + s.no + ' · ' + s.pos + (s.taken ? ' · taken' : '') + '"' + (s.taken ? ' disabled' : '') + '>' + s.no + '</button>';
+                    var state = s.taken ? 'taken' : s.held ? 'held' : 'free', note = s.taken ? ' · taken' : s.held ? ' · held by a colleague' : '';
+                    if (s.mine && !seat.value) seat.value = s.no;              // the seat this clerk is already holding
+                    html += '<button type="button" class="seat ' + state + (s.pos === 'Window' ? ' window' : '') + '" data-no="' + s.no +
+                            '" title="' + s.no + ' · ' + s.pos + note + '"' + (s.taken || s.held ? ' disabled' : '') + '>' + s.no + '</button>';
                 });
                 html += '</div>';
             }
@@ -92,11 +94,17 @@ document.querySelectorAll('form[data-seatpicker]').forEach(function (form) {
         });
     }
 
+    // clicking a seat holds it for a few minutes (HoldSeat procedure), so no colleague can sell it meanwhile
     map.addEventListener('click', function (e) {
         var b = e.target.closest('.seat');
         if (!b || b.disabled) return;
-        seat.value = b.dataset.no;
-        mark();
+        var body = new FormData();
+        ['csrf_token', 's_id', 'travel_date'].forEach(function (k) { body.append(k, form.elements[k].value); });
+        body.append('seat', b.dataset.no);
+        fetch('/api/hold', { method: 'POST', body: body }).then(function (r) { return r.json(); }).then(function (x) {
+            if (x.ok) { seat.value = b.dataset.no; mark(); say(x.message, 'text-success fw-semibold'); }
+            else { say(x.message, 'text-danger fw-semibold'); draw(); }
+        });
     });
     seat.addEventListener('input', mark);
     schedule.addEventListener('change', draw);

@@ -290,7 +290,8 @@ class UiAuditTests(Base):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        schema = open(os.path.join(ROOT, 'schema.sql')).read().replace('public_transport', cls.DB)
+        with open(os.path.join(ROOT, 'schema.sql')) as f:
+            schema = f.read().replace('public_transport', cls.DB)
         mysql(f'DROP DATABASE IF EXISTS {cls.DB}')
         mysql(stdin=schema)
         cls.original_db = cls.appmod.db_config['database']
@@ -455,7 +456,8 @@ class PrivilegeTests(Base):
         for stmt in ('DROP TABLE Feedback', 'ALTER TABLE Ticket ADD COLUMN zz INT', 'CREATE TABLE zz (a INT)',
                      "UPDATE TicketAudit SET Action = 'FORGED'", 'DELETE FROM TicketAudit', 'DROP TRIGGER AuditBooking',
                      "CREATE USER 'x'@'localhost'", 'TRUNCATE TABLE Ticket', "INSERT INTO Seat VALUES (1, '99A', 'Window')",
-                     'DELETE FROM Seat', 'DROP EVENT PurgeLoginAttempts'):
+                     'DELETE FROM Seat', 'DROP EVENT PurgeLoginAttempts', 'DELETE FROM SeatHold',
+                     'CALL GenerateSeats(1, 50, 4)', 'CALL ExtendAuditPartitions(48)'):      # invoker-rights routines
             conn = self.app_conn()
             try:
                 with self.assertRaises(mysql.connector.Error, msg=stmt) as cm:
@@ -770,7 +772,7 @@ class ReferenceDataTests(Base):
         self.assertEqual(rows[0]['TravelDate'], date.today())
 
     def test_schema_version_is_recorded(self):
-        self.assertEqual(self.appmod.query('SELECT MAX(Version) v FROM SchemaVersion')[0]['v'], 3)
+        self.assertEqual(self.appmod.query('SELECT MAX(Version) v FROM SchemaVersion')[0]['v'], 4)
 
 
 class AccountSecurityTests(Base):
@@ -876,7 +878,8 @@ class MigrationTests(unittest.TestCase):
         "UNION ALL SELECT 'chk', CONCAT_WS('|', tc.table_name, tc.constraint_name, cc.check_clause) FROM information_schema.table_constraints tc JOIN information_schema.check_constraints cc ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name WHERE tc.table_schema = DATABASE() AND tc.constraint_type = 'CHECK' "
         "UNION ALL SELECT 'fk', CONCAT_WS('|', table_name, constraint_name, referenced_table_name, delete_rule) FROM information_schema.referential_constraints WHERE constraint_schema = DATABASE() "
         "UNION ALL SELECT 'trg', CONCAT_WS('|', trigger_name, event_object_table, action_timing, event_manipulation, action_order, action_statement) FROM information_schema.triggers WHERE trigger_schema = DATABASE() "
-        "UNION ALL SELECT 'rtn', CONCAT_WS('|', routine_name, routine_type, routine_definition) FROM information_schema.routines WHERE routine_schema = DATABASE() "
+        "UNION ALL SELECT 'rtn', CONCAT_WS('|', routine_name, routine_type, security_type, routine_definition) FROM information_schema.routines WHERE routine_schema = DATABASE() "
+        "UNION ALL SELECT 'part', CONCAT_WS('|', table_name, partition_name, partition_ordinal_position, partition_method, partition_expression, partition_description) FROM information_schema.partitions WHERE table_schema = DATABASE() AND partition_name IS NOT NULL "
         "UNION ALL SELECT 'evt', CONCAT_WS('|', event_name, interval_value, interval_field, event_definition) FROM information_schema.events WHERE event_schema = DATABASE() "
         "UNION ALL SELECT 'view', CONCAT_WS('|', table_name, view_definition) FROM information_schema.views WHERE table_schema = DATABASE() ORDER BY 1, 2")
 
@@ -907,7 +910,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*), SUM(Fare) FROM Ticket'), before)                 # no ticket or fare lost
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Ticket WHERE TravelDate = DATE(BookingDate)'), before.split()[0])
-        self.assertEqual(self.scalar(self.OLD, 'SELECT MAX(Version) FROM SchemaVersion'), '3')
+        self.assertEqual(self.scalar(self.OLD, 'SELECT MAX(Version) FROM SchemaVersion'), '4')
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Ticket T JOIN Schedule S USING (ScheduleID) WHERE NOT EXISTS '
                                                '(SELECT 1 FROM Seat ST WHERE ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo)'), '0')   # seats relabelled
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Vehicle V WHERE Capacity <> (SELECT COUNT(*) FROM Seat ST WHERE ST.VehicleID = V.VehicleID)'), '0')
@@ -915,7 +918,7 @@ class MigrationTests(unittest.TestCase):
             mysql(stdin=f.read().replace('public_transport', self.NEW))
         upgraded = self.scalar(self.OLD, self.SIGNATURE).replace(self.OLD, 'DB')
         fresh = self.scalar(self.NEW, self.SIGNATURE).replace(self.NEW, 'DB')
-        self.assertGreater(len(fresh.splitlines()), 200)
+        self.assertGreater(len(fresh.splitlines()), 240)
         self.assertEqual(upgraded.splitlines(), fresh.splitlines())                                              # structure, constraints, triggers, routines, views
         again = self.migrate()
         self.assertIn('Up to date', again.stdout)
@@ -1188,12 +1191,161 @@ class EventTests(Base):
     def test_old_sign_in_failures_are_purged_by_a_scheduled_event(self):
         out = mysql(f"SELECT CONCAT_WS('|', EVENT_NAME, INTERVAL_VALUE, INTERVAL_FIELD, STATUS) FROM information_schema.events "
                     f"WHERE EVENT_SCHEMA = '{TEST_DB}'").stdout                         # (the application user cannot even see events)
-        self.assertIn('PurgeLoginAttempts|1|HOUR|ENABLED', out)
+        for event in ('PurgeLoginAttempts|1|HOUR|ENABLED', 'PurgeSeatHolds|1|MINUTE|ENABLED', 'MaintainAuditPartitions|1|MONTH|ENABLED'):
+            self.assertIn(event, out)
         self.appmod.execute("INSERT INTO LoginAttempt VALUES ('old', '1.2.3.4', 3, NOW() - INTERVAL 2 DAY), ('new', '1.2.3.4', 3, NOW())")
-        body = mysql(f"SELECT EVENT_DEFINITION FROM information_schema.events WHERE EVENT_SCHEMA = '{TEST_DB}'").stdout.splitlines()[-1]
+        body = mysql(f"SELECT EVENT_DEFINITION FROM information_schema.events WHERE EVENT_SCHEMA = '{TEST_DB}' AND EVENT_NAME = 'PurgeLoginAttempts'").stdout.splitlines()[-1]
         mysql(f'USE {TEST_DB}; {body}')                                                  # run exactly what the event runs every hour
         left = [r['Username'] for r in self.appmod.query("SELECT Username FROM LoginAttempt WHERE Address = '1.2.3.4'")]
         self.assertEqual(left, ['new'])
+
+
+class SeatHoldTests(Base):
+    """Clicking a seat holds it for a few minutes; a colleague cannot sell it meanwhile; booking or expiry releases it."""
+
+    def as_user(self, name):
+        self.client = self.appmod.app.test_client()
+        self.login(name)
+
+    def hold(self, seat, schedule=2, day=None):
+        r = self.client.post('/api/hold', data={'s_id': schedule, 'seat': seat, 'travel_date': (day or date.today()).isoformat(),
+                                                'csrf_token': self.token('/')})
+        return r.status_code, (r.get_json() or {}).get('message', '')
+
+    def holds(self, seat=None):
+        sql = 'SELECT SeatNo, HeldBy FROM SeatHold' + (' WHERE ScheduleID = 2 AND SeatNo = %s' if seat else '')
+        return self.appmod.query(sql, (seat,) if seat else ())
+
+    def test_a_held_seat_cannot_be_sold_by_a_colleague_but_by_the_holder(self):
+        self.as_user('staff')
+        self.assertEqual(self.hold('6A'), (200, 'Seat 6A is held for you for 5 minutes.'))
+        self.as_user('admin')
+        self.assertIn('held by another clerk', self.post('/book', p_id=3, s_id=2, seat='6A', fare=''))
+        self.assertEqual(self.hold('6A')[0], 409)                                       # nor hold it
+        seats = self.client.get(f'/api/seats?s=2&d={date.today().isoformat()}').get_json()['seats']
+        self.assertTrue(next(x for x in seats if x['no'] == '6A')['held'])
+        self.as_user('staff')
+        self.assertTrue(next(x for x in self.client.get(f'/api/seats?s=2&d={date.today().isoformat()}').get_json()['seats'] if x['no'] == '6A')['mine'])
+        self.assertIn('Ticket booked', self.post('/book', p_id=3, s_id=2, seat='6A', fare=''))
+        self.assertEqual(self.holds('6A'), [])                                           # the ReleaseHold trigger cleared it
+
+    def test_one_hold_per_clerk_and_expired_holds_do_not_block(self):
+        self.as_user('staff')
+        self.hold('6B')
+        self.hold('6C')                                                                  # picking another seat releases 6B
+        self.assertEqual([(h['SeatNo'], h['HeldBy']) for h in self.holds() if h['HeldBy'] == 'staff'], [('6C', 'staff')])
+        mysql(f"UPDATE {TEST_DB}.SeatHold SET ExpiresAt = NOW() - INTERVAL 1 MINUTE WHERE HeldBy = 'staff'")
+        self.as_user('admin')
+        self.assertIn('Ticket booked', self.post('/book', p_id=4, s_id=2, seat='6C', fare=''))   # an expired hold is no hold
+        mysql(f"USE {TEST_DB}; INSERT INTO SeatHold VALUES (2, CURDATE(), '6D', 'nobody', NOW() - INTERVAL 1 MINUTE)")
+        mysql(f"USE {TEST_DB}; DELETE FROM SeatHold WHERE ExpiresAt <= NOW()")              # what PurgeSeatHolds runs every minute
+        self.assertEqual(self.holds('6D'), [])
+
+    def test_holds_obey_the_same_rules_as_bookings(self):
+        self.as_user('staff')
+        self.assertIn('already booked', self.hold('1A')[1])                              # a seed booking
+        self.assertIn('No such seat', self.hold('13A')[1])
+        saturday = date.today() + timedelta(days=(5 - date.today().weekday()) % 7 or 7)
+        self.assertIn('does not run', self.hold('1A', schedule=11, day=saturday)[1])
+        self.assertEqual(self.client.post('/api/hold', data={'s_id': 2, 'seat': '7A', 'travel_date': 'x', 'csrf_token': self.token('/')}).status_code, 400)
+        self.as_user('viewer')
+        r = self.client.post('/api/hold', data={'s_id': 2, 'seat': '7A', 'travel_date': date.today().isoformat(), 'csrf_token': self.token('/')})
+        self.assertEqual(r.status_code, 302)                                             # viewers may not hold seats
+        self.assertEqual(self.holds('7A'), [])
+
+
+class ETicketTests(Base):
+    """A printable e-ticket with a signed QR code, and the check a conductor makes by scanning it."""
+
+    def setUp(self):
+        super().setUp()
+        self.login('admin')
+
+    def code_for(self, ticket_id):
+        html = self.client.get(f'/tickets/{ticket_id}').get_data(as_text=True)
+        self.assertIn('<svg', html)                                                      # the QR code
+        return re.search(r'/verify/(\d+-[0-9a-f]{16})', html).group(1)
+
+    def test_valid_today_future_tampered_and_cancelled(self):
+        code = self.code_for(1)                                                          # a seed ticket for today
+        self.assertIn('Valid today', self.client.get(f'/verify/{code}').get_data(as_text=True))
+        tampered = code[:-1] + ('0' if code[-1] != '0' else '1')
+        self.assertIn('Not a genuine', self.client.get(f'/verify/{tampered}').get_data(as_text=True))
+        self.assertIn('Not a genuine', self.client.get('/verify/1-0000000000000000').get_data(as_text=True))
+        self.assertEqual(self.client.get('/verify/abc').status_code, 400)
+        self.post('/book', p_id=6, s_id=3, seat='9A', fare='', travel_date=(date.today() + timedelta(days=2)).isoformat())
+        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 3 AND SeatNo = '9A'")[0]['TicketID']
+        later = self.code_for(tid)
+        self.assertIn('another day', self.client.get(f'/verify/{later}').get_data(as_text=True))
+        self.post(f'/cancel/{tid}')
+        r = self.client.get(f'/verify/{later}')
+        self.assertEqual(r.status_code, 410)
+        self.assertIn('Cancelled ticket', r.get_data(as_text=True))
+        self.assertIn('by admin', r.get_data(as_text=True))                              # read from the audit trail
+
+    def test_a_changed_seat_invalidates_the_old_code(self):
+        self.post('/book', p_id=7, s_id=3, seat='9B', fare='')
+        tid = self.appmod.query("SELECT TicketID FROM Ticket WHERE ScheduleID = 3 AND SeatNo = '9B'")[0]['TicketID']
+        code = self.code_for(tid)
+        self.post(f'/transfer/{tid}', s_id=3, seat='9C')                                 # a transfer issues a new ticket
+        self.assertEqual(self.client.get(f'/verify/{code}').status_code, 410)
+
+    def test_every_role_sees_e_tickets_but_only_when_signed_in(self):
+        self.assertEqual(self.client.get('/tickets/999999').status_code, 404)
+        anonymous = self.appmod.app.test_client()
+        self.assertEqual(anonymous.get('/tickets/1').status_code, 302)
+        self.assertEqual(anonymous.get('/verify/1-0000000000000000').status_code, 302)
+        self.client = self.appmod.app.test_client()
+        self.login('viewer')
+        self.assertIn('Scan to verify', self.client.get('/tickets/1').get_data(as_text=True))
+
+
+class PartitionTests(Base):
+    """The audit trail is partitioned by quarter; queries on a period read only its partitions; new quarters are added."""
+
+    def partitions(self):
+        out = mysql(f"SELECT PARTITION_NAME FROM information_schema.partitions WHERE TABLE_SCHEMA = '{TEST_DB}' "
+                    f"AND TABLE_NAME = 'TicketAudit' ORDER BY PARTITION_ORDINAL_POSITION").stdout.split()[1:]
+        return out
+
+    def test_range_partitions_and_pruning(self):
+        parts = self.partitions()
+        self.assertGreaterEqual(len(parts), 10)
+        self.assertEqual((parts[0], parts[-1]), ('p_before_2026', 'pmax'))
+        today = date.today()
+        quarter_start = date(today.year, 3 * ((today.month - 1) // 3) + 1, 1)
+        plan = self.appmod.query("EXPLAIN FORMAT=TRADITIONAL SELECT COUNT(*) FROM TicketAudit WHERE ActionTime >= %s AND ActionTime < %s + INTERVAL 3 MONTH",
+                                 (quarter_start, quarter_start))[0]
+        self.assertEqual(plan['partitions'], f'p{today.year}q{(today.month - 1) // 3 + 1}')        # one partition read, not all
+        self.assertEqual(self.appmod.query('SELECT COUNT(*) n FROM TicketAudit')[0]['n'],
+                         self.appmod.query('SELECT COUNT(*) n FROM TicketAudit WHERE ActionTime >= %s', (quarter_start,))[0]['n']
+                         + self.appmod.query('SELECT COUNT(*) n FROM TicketAudit WHERE ActionTime < %s', (quarter_start,))[0]['n'])
+
+    def test_partition_maintenance_adds_future_quarters(self):
+        before = self.partitions()
+        mysql(f'USE {TEST_DB}; CALL ExtendAuditPartitions(36)')
+        after = self.partitions()
+        self.assertGreater(len(after), len(before))
+        horizon = date.today() + timedelta(days=36 * 31)
+        self.assertIn(f'p{horizon.year - 1}q4', after)
+        self.assertEqual(after[-1], 'pmax')
+        mysql(f'USE {TEST_DB}; CALL ExtendAuditPartitions(36)')
+        self.assertEqual(self.partitions(), after)                                       # nothing to do the second time
+        self.login('admin')
+        self.post('/book', p_id=8, s_id=3, seat='9D', fare='')                          # the audit trail still takes rows
+        self.assertEqual(self.appmod.query("SELECT COUNT(*) n FROM TicketAudit WHERE SeatNo = '9D' AND ScheduleID = 3")[0]['n'], 1)
+
+
+class BoardTests(Base):
+    def test_departure_board_lists_todays_departures_with_a_status(self):
+        self.login('viewer')
+        html = self.client.get('/board').get_data(as_text=True)
+        rows = self.appmod.query('SELECT Status FROM DepartureBoard')
+        running = self.appmod.query('SELECT COUNT(*) n FROM Schedule WHERE RunsOn(ScheduleID, CURDATE())')[0]['n']
+        self.assertEqual(len(rows), running)
+        self.assertTrue({r['Status'] for r in rows} <= {'Scheduled', 'Boarding', 'En route', 'Arrived', 'Cancelled'})
+        self.assertEqual(html.count('class="board-row status-'), running)
+        self.assertIn('Departures now', self.client.get('/').get_data(as_text=True))
 
 
 if __name__ == '__main__':
