@@ -16,7 +16,7 @@
                 <td class="text-muted small">{{ u.CreatedAt | fmt }}</td>
                 <td class="text-end">{% if u.UserID != current_user.id %}
                     <form method="POST" action="{{ url_for('delete_user', uid=u.UserID) }}" data-confirm="Delete user {{ u.Username }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>{% else %}<span class="text-muted small">you</span>{% endif %}</td>
+                        <button class="btn btn-sm btn-outline-danger" aria-label="Delete"><i class="bi bi-trash"></i></button></form>{% else %}<span class="text-muted small">you</span>{% endif %}</td>
             </tr>
         {% endfor %}
         </tbody>

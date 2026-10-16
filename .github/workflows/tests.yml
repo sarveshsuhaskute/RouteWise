@@ -23,3 +23,47 @@ jobs:
           MYSQL_ADMIN_USER: root
           MYSQL_ADMIN_PASSWORD: root
         run: python -m unittest discover -s tests -v
+
+  docker:
+    # the packaged stack: MySQL 8.4 + the application image + Caddy serving HTTPS
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the stack
+        run: |
+          printf 'MYSQL_ROOT_PASSWORD=ci-root-pw\nAPP_DB_PASSWORD=ci-app-pw\nSECRET_KEY=ci-secret-key\n' > .env
+          docker compose up -d --build --wait --wait-timeout 300
+      - name: HTTPS serves the application, HTTP redirects to it
+        run: |
+          curl -sk https://localhost:8443/login | grep -q '<title>Sign in · RouteWise</title>'
+          curl -sk https://localhost:8443/healthz | grep -q '"status":"ok"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/login)" = "308"
+          curl -skI https://localhost:8443/login | grep -qi 'strict-transport-security'
+      - name: Container logs
+        if: failure()
+        run: docker compose logs
+
+  accessibility:
+    # axe-core (WCAG 2.1 A and AA rules) on every page, as an administrator and as a viewer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Database and application
+        run: |
+          sudo systemctl start mysql.service
+          mysql -uroot -proot < schema.sql
+          pip install -r requirements.txt
+          nohup python -m waitress --listen=127.0.0.1:5000 app:app > app.log 2>&1 &
+          for i in $(seq 30); do curl -s -o /dev/null http://127.0.0.1:5000/login && break; sleep 1; done
+      - name: Audit every page
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          npm install --no-save --prefix tools axe-core@4.10 puppeteer-core@23
+          node tools/a11y_audit.js http://127.0.0.1:5000

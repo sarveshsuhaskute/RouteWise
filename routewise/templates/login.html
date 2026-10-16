@@ -12,10 +12,10 @@
         {% for category, message in messages %}<div class="alert alert-{{ category }} py-2 small">{{ message }}</div>{% endfor %}
         {% endwith %}
         <form method="POST"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <div class="mb-3"><label class="form-label">Username</label>
-                <input name="username" class="form-control" autocomplete="username" autofocus required></div>
-            <div class="mb-3"><label class="form-label">Password</label>
-                <input name="password" type="password" class="form-control" autocomplete="current-password" required></div>
+            <div class="mb-3"><label class="form-label" for="username">Username</label>
+                <input name="username" id="username" class="form-control" autocomplete="username" autofocus required></div>
+            <div class="mb-3"><label class="form-label" for="password">Password</label>
+                <input name="password" id="password" type="password" class="form-control" autocomplete="current-password" required></div>
             <button class="btn btn-brand w-100">Sign in</button>
         </form>
         <p class="text-center text-muted small mt-3 mb-0">Roles: admin · staff · viewer</p>

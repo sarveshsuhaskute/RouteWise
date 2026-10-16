@@ -2,6 +2,7 @@
 import csv
 import io
 import math
+import re
 from datetime import date, timedelta
 
 import mysql.connector
@@ -61,9 +62,16 @@ def seat_and_date(missing_message):
     return s_id, seat, travel
 
 
+PAY_METHODS = ('Cash', 'UPI', 'Card')
+
+
 @app.route('/book', methods=['POST'])
 def book_ticket():
     p_id, fare = val('p_id'), val('fare')
+    method, reference = val('pay_method') or 'Cash', val('pay_ref') or None
+    if method not in PAY_METHODS or (reference and not re.fullmatch(r'[A-Za-z0-9 ./#-]{1,40}', reference)):
+        flash('Choose Cash, UPI or Card; a payment reference may contain letters, digits and . / # - (at most 40).', 'danger')
+        return redirect(url_for('bookings'))
     if not p_id.isdigit():
         flash('Passenger, schedule and seat number are required.', 'danger')
         return redirect(url_for('bookings'))
@@ -81,7 +89,9 @@ def book_ticket():
             return redirect(url_for('bookings'))
     # BookTicket inserts a Ticket (blank fare -> CalcFare, blank date -> today); the triggers reject a taken seat, a seat
     # that is not on the vehicle, a full or idle vehicle and a date on which the departure does not run
-    return run(lambda: call('BookTicket', [p_id, s_id, seat, fare or None, travel]),
+    # the RecordSale trigger writes the payment ledger, reading the method and reference from @pay_method / @pay_ref
+    return run(lambda: call('BookTicket', [p_id, s_id, seat, fare or None, travel],
+                            variables={'pay_method': method, 'pay_ref': reference}),
                f'Ticket booked: seat {seat} on schedule #{s_id}' + (f', {travel.isoformat()}.' if travel else '.'), 'bookings')
 
 
@@ -107,19 +117,23 @@ def api_seats():
     s, day = request.args.get('s', ''), date_arg(request.args.get('d', ''))
     if not s.isdigit() or not day:
         return jsonify(left=None)
-    info = query("""SELECT V.Capacity, V.SeatsPerRow, SeatsLeft(S.ScheduleID, %s) AS left_, RunsOn(S.ScheduleID, %s) AS runs
-                    FROM Schedule S JOIN Vehicle V ON V.VehicleID = S.VehicleID WHERE S.ScheduleID = %s""", (day, day, s))
+    # TripVehicle: on a day with a vehicle swap the trip has the replacement's seat map
+    info = query("""SELECT V.Capacity, V.SeatsPerRow, V.VehicleNo, SeatsLeft(S.ScheduleID, %s) AS left_, RunsOn(S.ScheduleID, %s) AS runs,
+                           V.VehicleID <> S.VehicleID AS swapped
+                    FROM Schedule S JOIN Vehicle V ON V.VehicleID = TripVehicle(S.ScheduleID, %s) WHERE S.ScheduleID = %s""",
+                 (day, day, day, s))
     if not info:
         return jsonify(left=None)
     me = session['user']['username']
     seats = query("""SELECT ST.SeatNo, ST.Position, T.TicketID IS NOT NULL AS Taken, H.HeldBy
-                     FROM Schedule S JOIN Seat ST ON ST.VehicleID = S.VehicleID
+                     FROM Schedule S JOIN Seat ST ON ST.VehicleID = TripVehicle(S.ScheduleID, %s)
                      LEFT JOIN Ticket T ON T.ScheduleID = S.ScheduleID AND T.TravelDate = %s AND T.SeatNo = ST.SeatNo
                      LEFT JOIN SeatHold H ON H.ScheduleID = S.ScheduleID AND H.TravelDate = %s AND H.SeatNo = ST.SeatNo
                                          AND H.ExpiresAt > NOW()
-                     WHERE S.ScheduleID = %s ORDER BY LENGTH(ST.SeatNo), ST.SeatNo""", (day, day, s))
+                     WHERE S.ScheduleID = %s ORDER BY LENGTH(ST.SeatNo), ST.SeatNo""", (day, day, day, s))
     i = info[0]
     return jsonify(left=i['left_'], capacity=i['Capacity'], per_row=i['SeatsPerRow'], runs=bool(i['runs']),
+                   swapped=i['VehicleNo'] if i['swapped'] else None,
                    seats=[{'no': r['SeatNo'], 'pos': r['Position'], 'taken': bool(r['Taken']),
                            'held': bool(r['HeldBy']) and r['HeldBy'] != me, 'mine': r['HeldBy'] == me} for r in seats])
 

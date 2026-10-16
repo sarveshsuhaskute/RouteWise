@@ -1,9 +1,9 @@
 {% extends 'base.html' %}
 {% block title %}Departure board{% endblock %}
 {% block content %}
-<meta http-equiv="refresh" content="60">
 <div class="page-head">
-    <div><h1>Departure board</h1><p>Every departure running today ({{ today | fmt }}), from the <code>DepartureBoard</code> view. Refreshes every minute.</p></div>
+    <div><h1>Departure board</h1><p>Every departure running today ({{ today | fmt }}), from the <code>DepartureBoard</code> view.</p></div>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="autoRefresh" aria-pressed="true">Auto-refresh every minute: on</button>
 </div>
 <div class="board">
     <div class="board-row board-head"><span>Time</span><span>Route</span><span>To</span><span>Vehicle</span><span>Seats left</span><span>Status</span></div>
@@ -16,4 +16,16 @@
     <div class="board-row"><span>No departures run today.</span></div>
     {% endfor %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // refresh every minute, but let the reader switch it off (WCAG 2.2.1: timing adjustable)
+    var btn = document.getElementById('autoRefresh'), timer = setTimeout(function () { location.reload(); }, 60000);
+    btn.addEventListener('click', function () {
+        var on = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', on); btn.textContent = 'Auto-refresh every minute: ' + (on ? 'on' : 'off');
+        clearTimeout(timer); if (on) timer = setTimeout(function () { location.reload(); }, 60000);
+    });
+</script>
 {% endblock %}

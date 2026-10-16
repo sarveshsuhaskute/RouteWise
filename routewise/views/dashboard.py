@@ -14,7 +14,7 @@ def index():
                (SELECT COUNT(*) FROM Vehicle WHERE Status = 'Active')     AS vehicles,
                (SELECT COUNT(*) FROM Vehicle)                             AS total_vehicles,
                (SELECT ROUND(AVG(Rating), 1) FROM Feedback)               AS rating,
-               (SELECT COUNT(*) FROM Schedule WHERE RunsOn(ScheduleID, CURDATE())) AS running_today,
+               (SELECT COUNT(*) FROM DepartureBoard)                      AS running_today,
                (SELECT COUNT(*) FROM Schedule)                            AS departures,
                (SELECT Name FROM Holiday WHERE HolidayDate = CURDATE())   AS holiday_today
     """)[0]

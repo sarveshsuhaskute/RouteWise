@@ -107,6 +107,16 @@ SELECT ST.Position, COUNT(*) AS Tickets,
        ROUND(100 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS SharePct
 FROM Ticket T
 JOIN Schedule S ON S.ScheduleID = T.ScheduleID
-JOIN Seat ST    ON ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo
+LEFT JOIN VehicleSwap VS ON VS.ScheduleID = T.ScheduleID AND VS.TravelDate = T.TravelDate
+JOIN Seat ST ON ST.VehicleID = COALESCE(VS.VehicleID, S.VehicleID) AND ST.SeatNo = T.SeatNo
 GROUP BY ST.Position
 ORDER BY Tickets DESC;
+
+-- 14. Takings by payment method (cash-up)
+-- GROUP BY ... WITH ROLLUP over the payment ledger of the last 30 days: subtotals per method and a grand total; GROUPING() labels the summary rows.
+SELECT IF(GROUPING(Method), 'All methods', Method) AS Method,
+       IF(GROUPING(Kind), 'Net', Kind) AS Kind,
+       COUNT(*) AS Entries, SUM(Amount) AS Amount
+FROM Payment
+WHERE PaidAt >= CURDATE() - INTERVAL 30 DAY
+GROUP BY Method, Kind WITH ROLLUP;

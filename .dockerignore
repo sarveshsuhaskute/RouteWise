@@ -1,0 +1,9 @@
+.venv
+.env
+.git
+backups
+benchmarks
+tests
+__pycache__
+*.docx
+*.pptx

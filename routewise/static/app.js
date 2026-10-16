@@ -1,3 +1,24 @@
+// Accessibility: tie every visible label to the field that follows it (screen readers announce the label), and make
+// wide, scrollable tables reachable with the keyboard.
+var labelSeq = 0;
+document.querySelectorAll('label.form-label:not([for])').forEach(function (label) {
+    var field = label.parentNode.querySelector('input:not([type=hidden]), select, textarea');
+    if (!field) return;
+    if (!field.id) field.id = 'f' + (++labelSeq) + '-' + (field.name || 'field');
+    label.htmlFor = field.id;
+});
+function markScrollable() {
+    document.querySelectorAll('.table-wrap').forEach(function (w) {
+        if (w.scrollWidth > w.clientWidth + 1) {
+            w.tabIndex = 0; w.setAttribute('role', 'region');
+            var h = w.closest('.card') && w.closest('.card').querySelector('.card-header');
+            w.setAttribute('aria-label', (h ? h.textContent.trim().replace(/\s+/g, ' ').slice(0, 60) : 'Table') + ' (scrollable)');
+        }
+    });
+}
+markScrollable();
+window.addEventListener('resize', markScrollable);
+
 // Live table search: <input data-filter="tableId">
 document.querySelectorAll('[data-filter]').forEach(function (input) {
     input.addEventListener('input', function () {
@@ -43,7 +64,7 @@ document.querySelectorAll('select[data-filterable]').forEach(function (sel) {
     var all = Array.prototype.slice.call(sel.options).map(function (o) { return { value: o.value, text: o.text, disabled: o.disabled }; });
     var box = document.createElement('input');
     box.type = 'search'; box.className = 'form-control form-control-sm mb-1'; box.placeholder = 'Type to filter…';
-    box.setAttribute('aria-label', 'Filter the list');
+    box.setAttribute('aria-label', 'Filter the list of ' + ((sel.labels && sel.labels[0] && sel.labels[0].textContent.trim().toLowerCase()) || 'options'));
     sel.parentNode.insertBefore(box, sel);
     box.addEventListener('input', function () {
         var q = box.value.toLowerCase(), current = sel.value;
@@ -68,14 +89,17 @@ document.querySelectorAll('form[data-seatpicker]').forEach(function (form) {
     function say(text, cls) { hint.textContent = text; hint.className = 'small ' + (cls || 'text-muted'); }
 
     function mark() {
-        map.querySelectorAll('.seat').forEach(function (b) { b.classList.toggle('picked', b.dataset.no === seat.value.toUpperCase()); });
+        map.querySelectorAll('.seat').forEach(function (b) {
+            var on = b.dataset.no === seat.value.toUpperCase();
+            b.classList.toggle('picked', on); b.setAttribute('aria-pressed', on);
+        });
     }
 
     function draw() {
         if (!schedule.value || !day.value) return;
         fetch('/api/seats?s=' + schedule.value + '&d=' + day.value).then(function (r) { return r.json(); }).then(function (x) {
             if (x.left === null || !x.seats) { map.innerHTML = '<p class="seat-empty">No seat map for this departure.</p>'; return; }
-            var aisleAfter = Math.ceil(x.per_row / 2), html = '<div class="seat-front"><i class="bi bi-arrow-up"></i> front</div>';
+            var aisleAfter = Math.ceil(x.per_row / 2), html = '<div class="seat-front" aria-hidden="true"><i class="bi bi-arrow-up"></i> front</div>';
             for (var i = 0; i < x.seats.length; i += x.per_row) {
                 html += '<div class="seat-row"><span class="seat-rowno">' + (i / x.per_row + 1) + '</span>';
                 x.seats.slice(i, i + x.per_row).forEach(function (s, c) {
@@ -83,14 +107,16 @@ document.querySelectorAll('form[data-seatpicker]').forEach(function (form) {
                     var state = s.taken ? 'taken' : s.held ? 'held' : 'free', note = s.taken ? ' · taken' : s.held ? ' · held by a colleague' : '';
                     if (s.mine && !seat.value) seat.value = s.no;              // the seat this clerk is already holding
                     html += '<button type="button" class="seat ' + state + (s.pos === 'Window' ? ' window' : '') + '" data-no="' + s.no +
-                            '" title="' + s.no + ' · ' + s.pos + note + '"' + (s.taken || s.held ? ' disabled' : '') + '>' + s.no + '</button>';
+                            '" title="' + s.no + ' · ' + s.pos + note + '" aria-label="Seat ' + s.no + ', ' + s.pos.toLowerCase() + (note ? ',' + note.replace(' ·', '') : ', free') + '"' +
+                            ' aria-pressed="false"' + (s.taken || s.held ? ' disabled' : '') + '>' + s.no + '</button>';
                 });
                 html += '</div>';
             }
             map.innerHTML = html;
             mark();
             if (!x.runs) say('This departure does not run on ' + day.value + ' (service days or a public holiday).', 'text-danger fw-semibold');
-            else say(x.left + ' of ' + x.capacity + ' seats free on ' + day.value + '.', x.left > 0 ? 'text-success fw-semibold' : 'text-danger fw-semibold');
+            else say(x.left + ' of ' + x.capacity + ' seats free on ' + day.value + (x.swapped ? ' (vehicle ' + x.swapped + ' runs this trip that day)' : '') + '.',
+                     x.left > 0 ? 'text-success fw-semibold' : 'text-danger fw-semibold');
         });
     }
 

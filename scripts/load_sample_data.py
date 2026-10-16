@@ -8,7 +8,7 @@ about 25,000 tickets (two travel dates per departure over the last 30 days), and
 
 Every row goes through the application's own database user (routewise_app), so it passes the same constraints and
 triggers as real use: seats from each vehicle's seat map, no double seats, no overbooked vehicles, no overlapping runs,
-no trips on days a departure does not run, and an audit row for every ticket. About one departure in eight is a
+no trips on days a departure does not run, an audit row and a ledger entry for every ticket. About one departure in eight is a
 weekday-only service that does not run on public holidays.
 The data is deterministic (fixed random seed) and the script does nothing if the data is already loaded.
 Connection settings: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME (same defaults as the application).
@@ -127,11 +127,14 @@ def main():
                 break
             dep, arr = clock, clock + minutes
             weekdays_only = rng.random() < 0.125
-            cur.execute('INSERT INTO Schedule (RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency, ServiceDays, RunsOnHolidays) '
-                        'VALUES (%s,%s,%s,%s,%s,%s,%s)',
+            cur.execute('INSERT INTO Schedule (RouteID, VehicleID, DepartureTime, ArrivalTime, Frequency, RunsOnHolidays) '
+                        'VALUES (%s,%s,%s,%s,%s,%s)',
                         (rid, vid, f'{dep // 60:02d}:{dep % 60:02d}:00', f'{arr // 60:02d}:{arr % 60:02d}:00', rng.choice([10, 15, 20, 30, 60]),
-                         'Mon,Tue,Wed,Thu,Fri' if weekdays_only else 'Mon,Tue,Wed,Thu,Fri,Sat,Sun', not weekdays_only))
-            schedules.append((cur.lastrowid, rid, vid, dep, cap, per_row, weekdays_only))
+                         not weekdays_only))
+            sid = cur.lastrowid                               # the DefaultServiceDays trigger gave it all seven days
+            if weekdays_only:
+                cur.execute('DELETE FROM ScheduleDay WHERE ScheduleID = %s AND Weekday IN (1, 7)', (sid,))   # no Sunday, Saturday
+            schedules.append((sid, rid, vid, dep, cap, per_row, weekdays_only))
             clock = arr + rng.randint(15, 35)
     conn.commit()
 
@@ -170,6 +173,7 @@ def main():
                 booked = datetime.combine(travel, datetime.min.time()) - timedelta(days=rng.randint(0, 3)) + timedelta(minutes=rng.randint(0, 1439))
                 rows.append((p, sid, travel, seat, p, sid, booked))
             try:
+                cur.execute('SET @pay_method = %s', (weighted(rng, [('Cash', 0.45), ('UPI', 0.4), ('Card', 0.15)]),))   # read by RecordSale
                 cur.executemany('INSERT INTO Ticket (PassengerID, ScheduleID, TravelDate, SeatNo, Fare, BookingDate) '
                                 'SELECT %s, %s, %s, %s, CalcFare(%s, %s), %s', rows)
                 conn.commit()

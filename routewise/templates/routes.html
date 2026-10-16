@@ -21,7 +21,7 @@
                 <td><span class="pill {{ 'pill-violet' if r.Type == 'Metro' else 'pill-blue' }}">{{ r.Type }}</span></td>
                 <td>{{ r.Distance or '—' }} km</td><td>{{ r.TicketsSold }}</td><td>{{ r.Revenue | money }}</td>
                 <td class="text-end"><form class="w-admin" action="{{ url_for('delete_route', rid=r.RouteID) }}" method="POST" data-confirm="Delete route {{ r.RouteName }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></td>
+                    <button class="btn btn-sm btn-outline-danger" aria-label="Delete"><i class="bi bi-trash"></i></button></form></td>
             </tr>
         {% endfor %}
         </tbody>
@@ -45,7 +45,7 @@
                     <small class="text-muted">{{ s.OccupancyPct }}%</small></div></td>
                 <td>{{ s.SeatsLeft }} / {{ s.Capacity }}</td>
                 <td class="text-end"><form class="w-admin" action="{{ url_for('delete_schedule', sid=s.ScheduleID) }}" method="POST" data-confirm="Delete schedule #{{ s.ScheduleID }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></td>
+                    <button class="btn btn-sm btn-outline-danger" aria-label="Delete"><i class="bi bi-trash"></i></button></form></td>
             </tr>
         {% else %}
             <tr><td colspan="9" class="text-center text-muted py-4">{{ 'No departures match your search.' if q else 'No departures yet.' }}</td></tr>
@@ -64,8 +64,8 @@
             {% for f in fare_rules %}
                 <tr><td class="fw-semibold">{{ f.RouteType }}</td>
                 {% if role == 'admin' %}
-                    <td><input form="fr_{{ f.RouteType }}" name="rate" type="number" step="0.01" min="0.01" value="{{ f.RatePerKm }}" class="form-control form-control-sm" style="max-width:100px"></td>
-                    <td><input form="fr_{{ f.RouteType }}" name="min_fare" type="number" step="0.01" min="0.01" value="{{ f.MinFare }}" class="form-control form-control-sm" style="max-width:100px"></td>
+                    <td><input form="fr_{{ f.RouteType }}" name="rate" aria-label="{{ f.RouteType }}: rupees per km" type="number" step="0.01" min="0.01" value="{{ f.RatePerKm }}" class="form-control form-control-sm" style="max-width:100px"></td>
+                    <td><input form="fr_{{ f.RouteType }}" name="min_fare" aria-label="{{ f.RouteType }}: minimum fare" type="number" step="0.01" min="0.01" value="{{ f.MinFare }}" class="form-control form-control-sm" style="max-width:100px"></td>
                     <td class="text-end"><form id="fr_{{ f.RouteType }}" method="POST" action="{{ url_for('update_fare_rule') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="kind" value="route"><input type="hidden" name="key" value="{{ f.RouteType }}"><button class="btn btn-sm btn-outline-secondary">Save</button></form></td>
                 {% else %}
                     <td>{{ f.RatePerKm | money }}</td><td>{{ f.MinFare | money }}</td><td></td>
@@ -80,7 +80,7 @@
             {% for d in discounts %}
                 <tr><td class="fw-semibold">{{ d.CardType }}</td>
                 {% if role == 'admin' %}
-                    <td><input form="cd_{{ d.CardType }}" name="pct" type="number" min="0" max="90" value="{{ d.DiscountPct }}" class="form-control form-control-sm" style="max-width:100px"></td>
+                    <td><input form="cd_{{ d.CardType }}" name="pct" aria-label="{{ d.CardType }} card: discount percent" type="number" min="0" max="90" value="{{ d.DiscountPct }}" class="form-control form-control-sm" style="max-width:100px"></td>
                     <td class="text-end"><form id="cd_{{ d.CardType }}" method="POST" action="{{ url_for('update_fare_rule') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="kind" value="card"><input type="hidden" name="key" value="{{ d.CardType }}"><button class="btn btn-sm btn-outline-secondary">Save</button></form></td>
                 {% else %}
                     <td>{{ d.DiscountPct }} %</td><td></td>
@@ -98,7 +98,7 @@
         <div class="d-flex flex-wrap gap-2 mb-3">
         {% for h in holidays %}
             <span class="holiday-chip"><b>{{ h.HolidayDate | fmt }}</b> {{ h.Name }}
-            {% if role == 'admin' %}<form class="d-inline" method="POST" action="{{ url_for('delete_holiday', day=h.HolidayDate.isoformat()) }}" data-confirm="Remove {{ h.Name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn-x" title="Remove"><i class="bi bi-x"></i></button></form>{% endif %}</span>
+            {% if role == 'admin' %}<form class="d-inline" method="POST" action="{{ url_for('delete_holiday', day=h.HolidayDate.isoformat()) }}" data-confirm="Remove {{ h.Name }}?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn-x" title="Remove" aria-label="Remove"><i class="bi bi-x"></i></button></form>{% endif %}</span>
         {% else %}<span class="text-muted small">No holidays recorded.</span>{% endfor %}
         </div>
         {% if role == 'admin' %}
@@ -109,6 +109,36 @@
         </form>
         {% endif %}
     </div>
+</div>
+
+<div class="card mt-3">
+    <div class="card-header"><span><i class="bi bi-arrow-repeat me-2"></i>Vehicle swaps <span class="text-muted fw-normal small">· another vehicle runs one trip on one date; the database checks it can carry every seat already sold</span></span></div>
+    <div class="table-wrap"><table class="table table-hover align-middle">
+        <thead><tr><th>Date</th><th>Departure</th><th>Scheduled</th><th>Replacement</th><th>Reason</th><th></th></tr></thead>
+        <tbody>
+        {% for w in swaps %}
+            <tr><td>{{ w.TravelDate | fmt }}</td><td>#{{ w.ScheduleID }} · {{ w.RouteName }} · {{ w.DepartureTime | fmt }}</td><td>{{ w.Scheduled }}</td>
+                <td class="fw-semibold">{{ w.Replacement }}</td><td>{{ w.Reason }}</td>
+                <td class="text-end">{% if role == 'admin' %}<form method="POST" action="{{ url_for('delete_swap', sid=w.ScheduleID, day=w.TravelDate.isoformat()) }}" data-confirm="Remove this swap?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-danger" aria-label="Remove swap"><i class="bi bi-trash"></i></button></form>{% endif %}</td></tr>
+        {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-3">No vehicle swaps planned.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table></div>
+    {% if role == 'admin' %}
+    <div class="card-body border-top">
+        <form class="row g-2 align-items-end" method="POST" action="{{ url_for('add_swap') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-lg-4"><label class="form-label" for="swap_s">Departure</label>
+                <select name="s_id" id="swap_s" class="form-select form-select-sm" data-filterable required>
+                    {% for x in all_schedules %}<option value="{{ x.ScheduleID }}">#{{ x.ScheduleID }} · {{ x.RouteName }} · {{ x.DepartureTime | fmt }} · {{ x.VehicleNo }}</option>{% endfor %}</select></div>
+            <div class="col-lg-2"><label class="form-label" for="swap_d">Date</label><input type="date" name="travel_date" id="swap_d" class="form-control form-control-sm" required></div>
+            <div class="col-lg-2"><label class="form-label" for="swap_v">Replacement</label>
+                <select name="vehicle_id" id="swap_v" class="form-select form-select-sm" required>{% for v in vehicles %}<option value="{{ v.VehicleID }}">{{ v.VehicleNo }} ({{ v.Type }})</option>{% endfor %}</select></div>
+            <div class="col-lg-2"><label class="form-label" for="swap_r">Reason</label><input name="reason" id="swap_r" class="form-control form-control-sm" maxlength="100" required placeholder="e.g. brake repair"></div>
+            <div class="col-lg-2"><button class="btn btn-sm btn-outline-secondary w-100"><i class="bi bi-arrow-repeat me-1"></i>Swap</button></div>
+        </form>
+    </div>
+    {% endif %}
 </div>
 
 {% if role == 'admin' %}

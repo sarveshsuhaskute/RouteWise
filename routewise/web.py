@@ -8,7 +8,7 @@ from flask import flash, redirect, render_template, request, session, url_for
 from . import app
 from .db import friendly_error
 
-PUBLIC_ENDPOINTS = {'login', 'static'}
+PUBLIC_ENDPOINTS = {'login', 'static', 'healthz'}
 
 
 def val(name):
@@ -65,6 +65,14 @@ def csv_safe(v):
     """Stop Excel/Sheets from running a cell that starts with = + - @ as a formula (CSV injection)."""
     v = '' if v is None else str(v)
     return "'" + v if v[:1] in ('=', '+', '-', '@', '\t', '\r') else v
+
+
+@app.route('/healthz')
+def healthz():
+    """For container health checks and monitors: the application is up and can reach the database."""
+    from .db import query
+    query('SELECT 1 AS ok')
+    return {'status': 'ok'}
 
 
 # --- template filters ---------------------------------------------------------
