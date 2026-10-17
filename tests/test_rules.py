@@ -59,15 +59,19 @@ class PrivilegeTests(Base):
         self.assertEqual(after, before + 1)                                          # ...yet the trigger recorded the booking
 
     def test_updatable_view_with_check_option(self):
+        # a vehicle nobody is booked on, so only the view's own rule can refuse (CheckVehicleChange guards booked ones,
+        # and whether a seed vehicle still has trips ahead today depends on the time the tests run)
+        mysql(f"INSERT INTO {TEST_DB}.Vehicle (VehicleNo, Type, Capacity, Status) VALUES ('KA-00-VIEW', 'Bus', 8, 'Active')")
+        vid = self.appmod.query("SELECT VehicleID v FROM Vehicle WHERE VehicleNo = 'KA-00-VIEW'")[0]['v']
         active = self.appmod.query("SELECT COUNT(*) n FROM Vehicle WHERE Status='Active'")[0]['n']
         self.assertEqual(self.appmod.query("SELECT COUNT(*) n FROM ActiveVehicle")[0]['n'], active)
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             mysql_run = dict(os.environ, MYSQL_PWD=os.environ.get('MYSQL_ADMIN_PASSWORD', ''))
             subprocess.run(['mysql', '-u', os.environ.get('MYSQL_ADMIN_USER', 'root'), TEST_DB, '-e',
-                            "UPDATE ActiveVehicle SET Status='Retired' WHERE VehicleID=1"],
+                            f"UPDATE ActiveVehicle SET Status='Retired' WHERE VehicleID={vid}"],
                            env=mysql_run, check=True, capture_output=True, text=True)
         self.assertIn('CHECK OPTION failed', cm.exception.stderr)
-        self.assertEqual(self.appmod.query("SELECT Status FROM Vehicle WHERE VehicleID=1")[0]['Status'], 'Active')
+        self.assertEqual(self.appmod.query("SELECT Status FROM Vehicle WHERE VehicleID=%s", (vid,))[0]['Status'], 'Active')
 
 
 class UpdateRuleTests(Base):
