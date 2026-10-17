@@ -377,9 +377,11 @@ class UiAuditTests(Base):
 
     def test_pages_survive_completely_empty_tables(self):
         self.as_role('admin')
-        # emptied by the admin account: the application's own user is (rightly) not allowed to wipe the audit table
+        # emptied by the admin account: the application's own user is (rightly) not allowed to wipe the audit table.
+        # The ledgers are append-only for row deletes, so they are emptied the way an archive would be: TRUNCATE (DDL).
         mysql('SET FOREIGN_KEY_CHECKS=0; ' + ' '.join(f'DELETE FROM {self.DB}.{t};' for t in
-              ('TicketAudit', 'Ticket', 'Feedback', 'Schedule', 'Vehicle', 'Driver', 'Route', 'Passenger')))
+              ('Ticket', 'Feedback', 'Schedule', 'Vehicle', 'Driver', 'Route', 'Passenger'))
+              + f' TRUNCATE TABLE {self.DB}.TicketAudit; TRUNCATE TABLE {self.DB}.Payment;')
         for page in self.pages():
             self.assertEqual(self.client.get(page).status_code, 200, f'empty database: GET {page}')
 
@@ -459,7 +461,9 @@ class PrivilegeTests(Base):
                      'DELETE FROM Seat', 'DROP EVENT PurgeLoginAttempts', 'DELETE FROM SeatHold',
                      'CALL GenerateSeats(1, 50, 4)', 'CALL ExtendAuditPartitions(48)',       # invoker-rights routines
                      "INSERT INTO Payment (TicketID, PassengerID, Kind, Method, Amount) VALUES (1, 1, 'Sale', 'Cash', 5)",
-                     'UPDATE Payment SET Amount = 1', 'DELETE FROM Payment'):                  # the ledger is written by triggers only
+                     'UPDATE Payment SET Amount = 1', 'DELETE FROM Payment',                   # the ledger is written by triggers only
+                     'UPDATE Ticket SET Fare = 1', 'DELETE FROM Ticket',                       # tickets change only through procedures
+                     'UPDATE Schedule SET Frequency = 5'):
             conn = self.app_conn()
             try:
                 with self.assertRaises(mysql.connector.Error, msg=stmt) as cm:
@@ -776,7 +780,7 @@ class ReferenceDataTests(Base):
         self.assertEqual(rows[0]['TravelDate'], date.today())
 
     def test_schema_version_is_recorded(self):
-        self.assertEqual(self.appmod.query('SELECT MAX(Version) v FROM SchemaVersion')[0]['v'], 5)
+        self.assertEqual(self.appmod.query('SELECT MAX(Version) v FROM SchemaVersion')[0]['v'], 6)
 
 
 class AccountSecurityTests(Base):
@@ -885,7 +889,9 @@ class MigrationTests(unittest.TestCase):
         "UNION ALL SELECT 'rtn', CONCAT_WS('|', routine_name, routine_type, security_type, routine_definition) FROM information_schema.routines WHERE routine_schema = DATABASE() "
         "UNION ALL SELECT 'part', CONCAT_WS('|', table_name, partition_name, partition_ordinal_position, partition_method, partition_expression, partition_description) FROM information_schema.partitions WHERE table_schema = DATABASE() AND partition_name IS NOT NULL "
         "UNION ALL SELECT 'evt', CONCAT_WS('|', event_name, interval_value, interval_field, event_definition) FROM information_schema.events WHERE event_schema = DATABASE() "
-        "UNION ALL SELECT 'view', CONCAT_WS('|', table_name, view_definition) FROM information_schema.views WHERE table_schema = DATABASE() ORDER BY 1, 2")
+        "UNION ALL SELECT 'view', CONCAT_WS('|', table_name, view_definition) FROM information_schema.views WHERE table_schema = DATABASE() "
+        "UNION ALL SELECT 'priv', CONCAT_WS('|', grantee, table_name, privilege_type) FROM information_schema.table_privileges WHERE table_schema = DATABASE() "
+        "UNION ALL SELECT 'priv', CONCAT_WS('|', grantee, '*', privilege_type) FROM information_schema.schema_privileges WHERE table_schema = DATABASE() ORDER BY 1, 2")
 
     def setUp(self):
         self.env = dict(os.environ, MYSQL_PWD=os.environ.get('MYSQL_ADMIN_PASSWORD', ''), DB_NAME=self.OLD)
@@ -914,7 +920,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*), SUM(Fare) FROM Ticket'), before)                 # no ticket or fare lost
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Ticket WHERE TravelDate = DATE(BookingDate)'), before.split()[0])
-        self.assertEqual(self.scalar(self.OLD, 'SELECT MAX(Version) FROM SchemaVersion'), '5')
+        self.assertEqual(self.scalar(self.OLD, 'SELECT MAX(Version) FROM SchemaVersion'), '6')
         self.assertEqual(self.scalar(self.OLD, 'SELECT (SELECT SUM(Amount) FROM Payment) = (SELECT SUM(Fare) FROM Ticket)'), '1')   # ledger opened
         self.assertEqual(self.scalar(self.OLD, 'SELECT COUNT(*) FROM Ticket T JOIN Schedule S USING (ScheduleID) WHERE NOT EXISTS '
                                                '(SELECT 1 FROM Seat ST WHERE ST.VehicleID = S.VehicleID AND ST.SeatNo = T.SeatNo)'), '0')   # seats relabelled
@@ -1479,6 +1485,78 @@ class PaymentLedgerTests(Base):
         self.assertAlmostEqual(float(total[0]['Amount']), detail, places=2)
 
 
+class UpdateRuleTests(Base):
+    """Changing a row is checked as strictly as creating it, for every account (these statements run as root)."""
+
+    def setUp(self):
+        super().setUp()
+        self.login('admin')
+        self.day = date.today() + timedelta(days=1)
+
+    def vehicle(self, number, capacity, per_row=4, vtype='Bus'):
+        self.post('/vehicles/add', vehicle_no=number, type=vtype, capacity=capacity, seats_per_row=per_row, status='Active')
+        return self.appmod.query('SELECT VehicleID v FROM Vehicle WHERE VehicleNo = %s', (number,))[0]['v']
+
+    def departure(self, vid, dep, arr):
+        self.post('/schedules/add', route_id=1, vehicle_id=vid, departure=dep, arrival=arr)
+        return self.appmod.query('SELECT MAX(ScheduleID) m FROM Schedule')[0]['m']
+
+    def refused(self, sql, message):
+        with self.assertRaises(subprocess.CalledProcessError, msg=sql) as cm:
+            mysql(f'USE {TEST_DB}; {sql}')
+        self.assertIn(message, cm.exception.stderr, sql)
+
+    def test_a_sold_ticket_cannot_be_edited(self):
+        import mysql.connector
+        tid = self.appmod.query('SELECT MIN(TicketID) t FROM Ticket')[0]['t']
+        before = self.appmod.query('SELECT Fare, SeatNo FROM Ticket WHERE TicketID = %s', (tid,))[0]
+        self.refused(f'UPDATE Ticket SET Fare = 9999 WHERE TicketID = {tid}', 'cannot be edited')
+        self.refused(f"UPDATE Ticket SET SeatNo = '99F' WHERE TicketID = {tid}", 'cannot be edited')
+        with self.assertRaises(mysql.connector.Error) as cm:                                    # the app user may not even try
+            self.appmod.execute('UPDATE Ticket SET Fare = 1 WHERE TicketID = %s', (tid,))
+        self.assertEqual(cm.exception.errno, 1142)
+        self.assertEqual(self.appmod.query('SELECT Fare, SeatNo FROM Ticket WHERE TicketID = %s', (tid,))[0], before)
+        self.assertEqual(self.appmod.query('SELECT (SELECT SUM(Amount) FROM Payment) = (SELECT SUM(Fare) FROM Ticket) ok')[0]['ok'], 1)
+
+    def test_departure_changes_are_checked_like_new_departures(self):
+        eight, four, forty = self.vehicle('KA-00-UPA', 8), self.vehicle('KA-00-UPB', 4), self.vehicle('KA-00-UPC', 40)
+        sid = self.departure(eight, '21:00', '21:30')
+        self.assertIn('Ticket booked', self.post('/book', p_id=5, s_id=sid, seat='2C', fare='', travel_date=self.day.isoformat()))
+        self.refused(f'UPDATE Schedule SET VehicleID = {four} WHERE ScheduleID = {sid}', 'do not exist on the new vehicle')   # no row 2
+        self.refused(f'UPDATE Schedule SET RouteID = 3 WHERE ScheduleID = {sid}', 'does not match the route type')         # a metro line
+        self.refused(f'UPDATE Schedule SET RouteID = 2 WHERE ScheduleID = {sid}', 'cannot move to another route')          # tickets sold
+        mysql(f'USE {TEST_DB}; UPDATE Schedule SET VehicleID = {forty} WHERE ScheduleID = {sid}')                        # 2C exists there
+        other = self.departure(forty, '21:40', '21:50')
+        self.refused(f"UPDATE Schedule SET DepartureTime = '21:35', ArrivalTime = '21:45' WHERE ScheduleID = {sid}", 'already has a run')
+        mysql(f"USE {TEST_DB}; UPDATE Schedule SET DepartureTime = '21:05', ArrivalTime = '21:35', Frequency = 20 WHERE ScheduleID = {sid}")
+        mysql(f"USE {TEST_DB}; INSERT INTO VehicleSwap VALUES ({sid}, '{self.day}', {eight}, 'tyre change')")
+        self.refused(f"UPDATE Schedule SET ArrivalTime = '21:38' WHERE ScheduleID = {sid}", 'Remove the vehicle swaps')
+        self.refused(f"UPDATE VehicleSwap SET VehicleID = {four} WHERE ScheduleID = {sid}", 'Remove the swap and add a new one')
+        mysql(f"USE {TEST_DB}; UPDATE VehicleSwap SET Reason = 'tyre change (rear)' WHERE ScheduleID = {sid}")         # wording may change
+        self.assertEqual(self.appmod.query('SELECT VehicleID, DepartureTime FROM Schedule WHERE ScheduleID = %s', (sid,))[0]['VehicleID'], forty)
+        self.assertNotEqual(other, sid)
+
+    def test_vehicle_seat_and_service_day_changes(self):
+        vid = self.vehicle('KA-00-UPD', 8)
+        self.departure(vid, '21:00', '21:30')
+        out = self.post(f'/vehicles/{vid}/edit', vehicle_no='KA-00-UPD', type='Metro', capacity=8, seats_per_row=4, status='Active')
+        self.assertIn('cannot change type', out)                                                    # shown to the admin in the app
+        spare = self.vehicle('KA-00-UPE', 8)
+        mysql(f"USE {TEST_DB}; UPDATE Vehicle SET Type = 'Metro' WHERE VehicleID = {spare}")       # runs nothing yet: allowed
+        self.refused(f"UPDATE Seat SET SeatNo = '9Z' WHERE VehicleID = {vid} AND SeatNo = '1A'", 'Seat labels follow')
+        mysql(f"USE {TEST_DB}; UPDATE Seat SET Position = 'Aisle' WHERE VehicleID = {vid} AND SeatNo = '1A'")
+        self.refused('UPDATE ScheduleDay SET Weekday = 1 WHERE ScheduleID = 11 LIMIT 1', 'Add or remove a service day')
+
+    def test_ledger_and_audit_trail_are_append_only_even_for_root(self):
+        counts = 'SELECT (SELECT COUNT(*) FROM Payment) p, (SELECT COUNT(*) FROM TicketAudit) a'
+        before = self.appmod.query(counts)[0]
+        self.refused('UPDATE Payment SET Amount = 1', 'ledger is append-only')
+        self.refused('DELETE FROM Payment', 'ledger is append-only')
+        self.refused("UPDATE TicketAudit SET Action = 'FORGED'", 'audit trail is append-only')
+        self.refused('DELETE FROM TicketAudit', 'audit trail is append-only')
+        self.assertEqual(self.appmod.query(counts)[0], before)
+
+
 class ReplicationDemoTests(unittest.TestCase):
     """Two private MySQL servers: rows written on the primary reach the read-only replica (skipped where mysqld cannot run)."""
 
@@ -1498,6 +1576,7 @@ class ReplicationDemoTests(unittest.TestCase):
         self.assertTrue(out['replica_write'].startswith('refused'))
         self.assertEqual(out['report_rows'], 3)
         self.assertLess(out['lag_ms'], 5000)
+        self.assertEqual(out['after_failover'], {'tickets': 4, 'ledger_balanced': True})      # promoted, nothing lost
 
 
 if __name__ == '__main__':
