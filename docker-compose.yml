@@ -25,6 +25,7 @@ services:
       DB_PASSWORD: ${APP_DB_PASSWORD}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
       DEMO_USERS: ${DEMO_USERS:-1}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy

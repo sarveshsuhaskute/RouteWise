@@ -27,7 +27,8 @@ def between(start, end, inclusive_end=True):
 tables = between('-- [v5 tables]', '-- [end v5 tables]')
 partitions = between('PARTITION BY RANGE COLUMNS (ActionTime) (', 'PARTITION pmax    VALUES LESS THAN (MAXVALUE)\n);')
 indexes = between('DROP PROCEDURE IF EXISTS _add_index;', 'DROP PROCEDURE _add_index;')
-objects = between('DROP FUNCTION IF EXISTS TripVehicle;', '-- ---------------------------------------------------------------------\n--  8.', inclusive_end=False)
+SECTION_8 = '-- ---------------------------------------------------------------------\n--  8.'
+objects = between('DROP FUNCTION IF EXISTS TripVehicle;', SECTION_8, inclusive_end=False)
 grants = between("CREATE USER IF NOT EXISTS 'routewise_app'", "GRANT EXECUTE ON public_transport.* TO 'routewise_app'@'localhost';")
 version = between('INSERT IGNORE INTO SchemaVersion', ';')
 days = "'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'"

@@ -3,6 +3,7 @@
 Modules: db (connections and helpers), web (shared request helpers, filters, error pages), auth (sign-in, roles, CSRF,
 users), search (FULLTEXT search terms) and views/* (one module per page).
 """
+import logging
 import os
 import secrets
 
@@ -33,7 +34,10 @@ app.config.update(
     LOGIN_MAX_FAILURES=5,                                                       # failed sign-ins allowed ...
     LOGIN_LOCK_SECONDS=600,                                                     # ... within this window
     DEMO_USERS=os.environ.get('DEMO_USERS', '1') != '0',                        # create the demo accounts on first start
+    METRICS_TOKEN=os.environ.get('METRICS_TOKEN') or None,                      # /metrics stays off (404) without it
 )
+# one line per request on stderr (waitress and docker compose logs collect it), see monitoring.py
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
 
 if os.environ.get('BEHIND_PROXY') == '1':          # behind Caddy (docker-compose.yml): trust its X-Forwarded-* headers
     from werkzeug.middleware.proxy_fix import ProxyFix
@@ -41,5 +45,5 @@ if os.environ.get('BEHIND_PROXY') == '1':          # behind Caddy (docker-compos
 if os.environ.get('COOKIE_SECURE') == '1':           # session cookie only over HTTPS
     app.config['SESSION_COOKIE_SECURE'] = True
 
-from . import web, auth  # noqa: E402,F401  (registers filters, error pages, sign-in and user management)
-from .views import dashboard, bookings, tickets, passengers, fleet, network, feedback, reports  # noqa: E402,F401
+from . import auth, monitoring, web  # noqa: E402,F401  (filters, error pages, sign-in, users, access log and metrics)
+from .views import bookings, dashboard, feedback, fleet, network, passengers, reports, tickets  # noqa: E402,F401

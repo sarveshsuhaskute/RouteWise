@@ -47,9 +47,12 @@ def run(conn, sql):
 
 def reset():
     c = connect()
-    run(c, 'TRUNCATE TABLE Account'); run(c, 'INSERT INTO Account (id, balance) VALUES (1, 10)')
-    run(c, 'TRUNCATE TABLE Booking'); run(c, 'INSERT INTO Booking (trip) VALUES (1)')
-    c.commit(); c.close()
+    run(c, 'TRUNCATE TABLE Account')
+    run(c, 'INSERT INTO Account (id, balance) VALUES (1, 10)')
+    run(c, 'TRUNCATE TABLE Booking')
+    run(c, 'INSERT INTO Booking (trip) VALUES (1)')
+    c.commit()
+    c.close()
 
 
 def non_repeatable_read(level):
@@ -57,9 +60,12 @@ def non_repeatable_read(level):
     a, b = connect(level), connect()
     a.start_transaction()
     first = one(a, 'SELECT balance FROM Account WHERE id = 1')
-    run(b, 'UPDATE Account SET balance = 200 WHERE id = 1'); b.commit()
+    run(b, 'UPDATE Account SET balance = 200 WHERE id = 1')
+    b.commit()
     second = one(a, 'SELECT balance FROM Account WHERE id = 1')
-    a.commit(); a.close(); b.close()
+    a.commit()
+    a.close()
+    b.close()
     return first, second
 
 
@@ -68,9 +74,12 @@ def phantom(level):
     a, b = connect(level), connect()
     a.start_transaction()
     first = one(a, 'SELECT COUNT(*) FROM Booking WHERE trip = 1')
-    run(b, 'INSERT INTO Booking (trip) VALUES (1)'); b.commit()
+    run(b, 'INSERT INTO Booking (trip) VALUES (1)')
+    b.commit()
     second = one(a, 'SELECT COUNT(*) FROM Booking WHERE trip = 1')
-    a.commit(); a.close(); b.close()
+    a.commit()
+    a.close()
+    b.close()
     return first, second
 
 
@@ -88,10 +97,12 @@ def lost_update(strategy):
             value = one(c, f'SELECT balance FROM Account WHERE id = 1{lock}')
             time.sleep(0.4)                                                             # the other session gets in between
             run(c, f'UPDATE Account SET balance = {value + 1} WHERE id = 1')
-        c.commit(); c.close()
+        c.commit()
+        c.close()
     threads = [threading.Thread(target=worker) for _ in range(2)]
     for t in threads:
-        t.start(); time.sleep(0.05)
+        t.start()
+        time.sleep(0.05)
     for t in threads:
         t.join()
     c = connect()
@@ -116,7 +127,8 @@ def main():
         }
     finally:
         cur.execute(f'DROP DATABASE IF EXISTS {DB}')
-        admin.commit(); admin.close()
+        admin.commit()
+        admin.close()
     if '--json' in sys.argv:
         print(json.dumps(results))
         return
