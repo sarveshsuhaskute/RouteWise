@@ -8,7 +8,9 @@ Released migrations never change: 0002 to 0005 were generated the same way from 
     python migrations/make_0006.py
 """
 import os
+import sys
 
+sys.exit("0006 is released and frozen: it was generated from the version-6 schema. New changes go into a new migration.")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 schema = open(os.path.join(HERE, '..', 'schema.sql')).read()
@@ -20,7 +22,8 @@ def between(start, end, inclusive_end=True):
     return schema[i:j]
 
 
-objects = between('DROP FUNCTION IF EXISTS TripVehicle;', '-- ---------------------------------------------------------------------\n--  8.', inclusive_end=False)
+SECTION_8 = '-- ---------------------------------------------------------------------\n--  8.'
+objects = between('DROP FUNCTION IF EXISTS TripVehicle;', SECTION_8, inclusive_end=False)
 grants = between("CREATE USER IF NOT EXISTS 'routewise_app'", "GRANT EXECUTE ON public_transport.* TO 'routewise_app'@'localhost';")
 version = between('INSERT IGNORE INTO SchemaVersion', ';')
 

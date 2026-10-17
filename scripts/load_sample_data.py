@@ -6,12 +6,15 @@
 What it adds (at --scale 1): 30 routes, 66 drivers, 66 vehicles, about 600 departures, 3,000 passengers,
 about 25,000 tickets (two travel dates per departure over the last 30 days), and about 1,500 feedback entries.
 
-Every row goes through the application's own database user (routewise_app), so it passes the same constraints and
-triggers as real use: seats from each vehicle's seat map, no double seats, no overbooked vehicles, no overlapping runs,
+Every row except the tickets goes through the application's own database user (routewise_app). The tickets are history
+(travel dates in the last 30 days), which the application can never create: it may only sell through BookTicket, from
+today to 30 days ahead. So they are imported with the MySQL administrator account (MYSQL_ADMIN_USER /
+MYSQL_ADMIN_PASSWORD, default root with an empty password). Every row still passes the same constraints and triggers as
+real use: seats from each vehicle's seat map, no double seats, no overbooked vehicles, no overlapping runs,
 no trips on days a departure does not run, an audit row and a ledger entry for every ticket. About one departure in eight is a
 weekday-only service that does not run on public holidays.
 The data is deterministic (fixed random seed) and the script does nothing if the data is already loaded.
-Connection settings: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME (same defaults as the application).
+Connection settings: DB_HOST, DB_USER, DB_PASSWORD, DB_NAME (same defaults as the application), and the admin account above.
 """
 import argparse
 import os
@@ -43,6 +46,12 @@ def connect():
     return mysql.connector.connect(
         host=os.environ.get('DB_HOST', 'localhost'), user=os.environ.get('DB_USER', 'routewise_app'),
         password=os.environ.get('DB_PASSWORD', 'routewise_app_pw'), database=os.environ.get('DB_NAME', 'public_transport'))
+
+
+def connect_admin():
+    return mysql.connector.connect(
+        host=os.environ.get('DB_HOST', 'localhost'), user=os.environ.get('MYSQL_ADMIN_USER', 'root'),
+        password=os.environ.get('MYSQL_ADMIN_PASSWORD', ''), database=os.environ.get('DB_NAME', 'public_transport'))
 
 
 def weighted(rng, pairs):
@@ -157,7 +166,10 @@ def main():
     cur.execute('SELECT HolidayDate FROM Holiday')
     holidays = {row[0] for row in cur.fetchall()}
     tickets = failed = 0
-    for sid, rid, vid, dep, cap, per_row, weekdays_only in schedules:
+    admin = connect_admin()                     # history is imported by the administrator (see the module docstring)
+    acur = admin.cursor()
+    acur.execute("SET @actor = 'sample-data import'")
+    for sid, _rid, _vid, dep, cap, per_row, weekdays_only in schedules:
         hour = dep // 60
         peak = 0.85 if 7 <= hour <= 10 or 17 <= hour <= 20 else 0.55
         days = [today - timedelta(days=d) for d in range(30)]
@@ -173,15 +185,17 @@ def main():
                 booked = datetime.combine(travel, datetime.min.time()) - timedelta(days=rng.randint(0, 3)) + timedelta(minutes=rng.randint(0, 1439))
                 rows.append((p, sid, travel, seat, p, sid, booked))
             try:
-                cur.execute('SET @pay_method = %s', (weighted(rng, [('Cash', 0.45), ('UPI', 0.4), ('Card', 0.15)]),))   # read by RecordSale
-                cur.executemany('INSERT INTO Ticket (PassengerID, ScheduleID, TravelDate, SeatNo, Fare, BookingDate) '
-                                'SELECT %s, %s, %s, %s, CalcFare(%s, %s), %s', rows)
-                conn.commit()
+                acur.execute('SET @pay_method = %s', (weighted(rng, [('Cash', 0.45), ('UPI', 0.4), ('Card', 0.15)]),))   # read by RecordSale
+                acur.executemany('INSERT INTO Ticket (PassengerID, ScheduleID, TravelDate, SeatNo, Fare, BookingDate) '
+                                 'SELECT %s, %s, %s, %s, CalcFare(%s, %s), %s', rows)
+                admin.commit()
                 tickets += len(rows)
             except mysql.connector.Error as err:        # a rule rejected the batch: nothing half-written
-                conn.rollback()
+                admin.rollback()
                 failed += 1
                 print(f'  schedule {sid} on {travel}: {err.msg}', file=sys.stderr)
+
+    admin.close()
 
     # ---- feedback ---------------------------------------------------------------------------------
     n_fb = max(int(1500 * s), 20)

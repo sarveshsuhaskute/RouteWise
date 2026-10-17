@@ -4,7 +4,8 @@
 
 It builds database `routewise_bench` from schema.sql, loads `rows` synthetic tickets (default 200000) into
 TicketBench (a copy of Ticket's structure and indexes, without triggers) and as many passengers into PassengerBench,
-and times typical queries with and without the relevant index, including a FULLTEXT name search against LIKE '%...%'. Results are printed and saved to benchmarks/results.json.
+and times typical queries with and without the relevant index, including a FULLTEXT name search against LIKE '%...%'.
+Results are printed and saved to benchmarks/results.json.
 Uses the MySQL admin account: MYSQL_ADMIN_USER / MYSQL_ADMIN_PASSWORD (default root, empty password).
 """
 import json
@@ -30,10 +31,14 @@ def sh_mysql(sql=None, stdin=None):
 
 
 def timed(cur, sql, runs=15):
-    cur.execute(sql); cur.fetchall()                      # warm-up
+    cur.execute(sql)
+    cur.fetchall()                      # warm-up
     samples = []
     for _ in range(runs):
-        t = time.perf_counter(); cur.execute(sql); cur.fetchall(); samples.append((time.perf_counter() - t) * 1000)
+        t = time.perf_counter()
+        cur.execute(sql)
+        cur.fetchall()
+        samples.append((time.perf_counter() - t) * 1000)
     return round(statistics.mean(samples), 2), round(min(samples), 2)
 
 
@@ -67,8 +72,10 @@ def main():
                CONCAT('p', n, '@bench.example'), CONCAT('9', LPAD(n, 9, '0')), 'None' FROM seq""")
     conn.commit()
     load_s = round(time.perf_counter() - t, 1)
-    cur.execute('ANALYZE TABLE TicketBench'); cur.fetchall()
-    cur.execute('SELECT COUNT(*) AS n FROM TicketBench'); n = cur.fetchone()['n']
+    cur.execute('ANALYZE TABLE TicketBench')
+    cur.fetchall()
+    cur.execute('SELECT COUNT(*) AS n FROM TicketBench')
+    n = cur.fetchone()['n']
     print(f'Loaded {n:,} tickets in {load_s}s')
 
     q_passenger = 'SELECT COUNT(*) AS trips, SUM(Fare) AS spent FROM TicketBench WHERE PassengerID = 4242'
@@ -86,16 +93,19 @@ def main():
     q_match = "SELECT PassengerID, Name FROM PassengerBench WHERE MATCH(Name, Email) AGAINST ('+zorawar*' IN BOOLEAN MODE)"
     results = []
     for title, sql, index in experiments:
-        cur.execute(f'SHOW INDEX FROM TicketBench WHERE Key_name = %s', (index,)); cols = [r['Column_name'] for r in cur.fetchall()]
-        with_plan, (with_mean, with_min) = plan(cur, sql), timed(cur, sql)
+        cur.execute('SHOW INDEX FROM TicketBench WHERE Key_name = %s', (index,))
+        cols = [r['Column_name'] for r in cur.fetchall()]
+        with_plan, (with_mean, _) = plan(cur, sql), timed(cur, sql)
         cur.execute(f'ALTER TABLE TicketBench DROP INDEX {index}')
-        without_plan, (without_mean, without_min) = plan(cur, sql), timed(cur, sql)
+        without_plan, (without_mean, _) = plan(cur, sql), timed(cur, sql)
         cur.execute(f'ALTER TABLE TicketBench ADD {"UNIQUE " if index.startswith("uq") else ""}INDEX {index} ({", ".join(cols)})')
         results.append({'query': title, 'index': index, 'with_ms': with_mean, 'without_ms': without_mean,
                         'speedup': round(without_mean / with_mean, 1), 'with_plan': with_plan, 'without_plan': without_plan})
     # word search: the FULLTEXT index against LIKE '%word%', which has to read every row
-    cur.execute('ANALYZE TABLE PassengerBench'); cur.fetchall()
-    cur.execute(q_match); found = len(cur.fetchall())
+    cur.execute('ANALYZE TABLE PassengerBench')
+    cur.fetchall()
+    cur.execute(q_match)
+    found = len(cur.fetchall())
     (ft_mean, _), (like_mean, _) = timed(cur, q_match), timed(cur, q_like)
     results.append({'query': 'Name search: MATCH ... AGAINST vs LIKE %word%', 'index': 'ft_passenger', 'with_ms': ft_mean, 'without_ms': like_mean,
                     'speedup': round(like_mean / ft_mean, 1), 'rows_found': found, 'with_plan': plan(cur, q_match), 'without_plan': plan(cur, q_like)})

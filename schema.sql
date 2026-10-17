@@ -1,5 +1,5 @@
 -- =====================================================================
---  RouteWise - Public Transport Management System  -  MySQL 8+ schema (version 6)
+--  RouteWise - Public Transport Management System  -  MySQL 8+ schema (version 7)
 --  Import in MySQL Workbench, or:  mysql -u root -p < schema.sql
 --  The script is re-runnable: tables use IF NOT EXISTS, programmable
 --  objects are dropped and recreated, seed data is only added once.
@@ -950,11 +950,16 @@ BEGIN
                          AND NOT EXISTS (SELECT 1 FROM VehicleSwap VS WHERE VS.ScheduleID = T.ScheduleID AND VS.TravelDate = T.TravelDate)
                          AND NOT EXISTS (SELECT 1 FROM Seat ST WHERE ST.VehicleID = NEW.VehicleID AND ST.SeatNo = T.SeatNo)) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seats sold on upcoming trips do not exist on the new vehicle.';
+    ELSEIF OLD.RunsOnHolidays AND NOT NEW.RunsOnHolidays
+           AND EXISTS (SELECT 1 FROM Ticket T JOIN Holiday H ON H.HolidayDate = T.TravelDate
+                       WHERE T.ScheduleID = OLD.ScheduleID AND T.TravelDate >= CURDATE()) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Tickets are sold for this departure on an upcoming public holiday.';
     END IF;
 END$$
 DELIMITER ;
 
 -- A vehicle that runs departures (or covers a swap) keeps its type: no bus turns into a metro train on a bus route.
+-- It leaves service only when no passenger is booked on a trip it would still run.
 DROP TRIGGER IF EXISTS CheckVehicleChange;
 DELIMITER $$
 CREATE TRIGGER CheckVehicleChange BEFORE UPDATE ON Vehicle FOR EACH ROW
@@ -963,6 +968,12 @@ BEGIN
        AND (EXISTS (SELECT 1 FROM Schedule WHERE VehicleID = OLD.VehicleID)
             OR EXISTS (SELECT 1 FROM VehicleSwap WHERE VehicleID = OLD.VehicleID AND TravelDate >= CURDATE())) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: This vehicle runs departures of its type; it cannot change type.';
+    -- taken out of service: nobody may be left holding a ticket for a trip it would run (swap those trips first)
+    ELSEIF OLD.Status = 'Active' AND NEW.Status <> 'Active'
+       AND EXISTS (SELECT 1 FROM Ticket T JOIN Schedule S ON S.ScheduleID = T.ScheduleID
+                   WHERE T.TravelDate >= CURDATE() AND TripVehicle(T.ScheduleID, T.TravelDate) = OLD.VehicleID
+                     AND (T.TravelDate > CURDATE() OR S.DepartureTime > CURTIME())) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Passengers are booked on upcoming trips of this vehicle; swap in another vehicle for those trips first.';
     END IF;
 END$$
 DELIMITER ;
@@ -974,6 +985,42 @@ CREATE TRIGGER ProtectSeat BEFORE UPDATE ON Seat FOR EACH ROW
 BEGIN
     IF NEW.VehicleID <> OLD.VehicleID OR NEW.SeatNo <> OLD.SeatNo THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Seat labels follow the vehicle''s capacity and layout; change the vehicle instead.';
+    END IF;
+END$$
+DELIMITER ;
+
+-- A route that has departures keeps its type: its vehicles were checked against it (CheckVehicleRouteType).
+DROP TRIGGER IF EXISTS CheckRouteChange;
+DELIMITER $$
+CREATE TRIGGER CheckRouteChange BEFORE UPDATE ON Route FOR EACH ROW
+BEGIN
+    IF NEW.Type <> OLD.Type AND EXISTS (SELECT 1 FROM Schedule WHERE RouteID = OLD.RouteID) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: This route has departures; it cannot change type.';
+    END IF;
+END$$
+DELIMITER ;
+
+-- A public holiday cannot be declared on a day for which tickets are sold on departures that do not run on holidays:
+-- those passengers would hold tickets for trips that no longer run.
+DROP TRIGGER IF EXISTS CheckHoliday;
+DELIMITER $$
+CREATE TRIGGER CheckHoliday BEFORE INSERT ON Holiday FOR EACH ROW
+BEGIN
+    IF EXISTS (SELECT 1 FROM Ticket T JOIN Schedule S ON S.ScheduleID = T.ScheduleID
+               WHERE T.TravelDate = NEW.HolidayDate AND NOT S.RunsOnHolidays) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Tickets are sold that day on departures that do not run on holidays.';
+    END IF;
+END$$
+DELIMITER ;
+
+DROP TRIGGER IF EXISTS CheckHolidayChange;
+DELIMITER $$
+CREATE TRIGGER CheckHolidayChange BEFORE UPDATE ON Holiday FOR EACH ROW
+BEGIN
+    IF NEW.HolidayDate <> OLD.HolidayDate
+       AND EXISTS (SELECT 1 FROM Ticket T JOIN Schedule S ON S.ScheduleID = T.ScheduleID
+                   WHERE T.TravelDate = NEW.HolidayDate AND NOT S.RunsOnHolidays) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: Tickets are sold that day on departures that do not run on holidays.';
     END IF;
 END$$
 DELIMITER ;
@@ -1054,22 +1101,23 @@ DO CALL ExtendAuditPartitions(6);
 -- ---------------------------------------------------------------------
 --  8. DATABASE USER FOR THE APPLICATION (least privilege)
 --  The web application connects as 'routewise_app', never as root. It may read and change business data,
---  call the stored routines and read the views, but it cannot create or drop objects. Tickets it can only create
---  (BookTicket) and read: cancelling and transferring run inside CancelTicket / TransferTicket. It can only READ
+--  call the stored routines and read the views, but it cannot create or drop objects. Tickets it can only READ:
+--  selling, cancelling and transferring run inside BookTicket / CancelTicket / TransferTicket (definer's rights), so a
+--  ticket always gets a travel date from today to 30 days ahead and a booking time set by MySQL. It can only READ
 --  the audit table, the payment ledger, the seat map and the seat holds (triggers and HoldSeat, which run with their definer's
 --  rights, write those). GenerateSeats and ExtendAuditPartitions run with the caller's rights, so the app cannot use them.
 --  Demo password: change it with scripts/set_app_password.sh before any real use.
 -- ---------------------------------------------------------------------
 CREATE USER IF NOT EXISTS 'routewise_app'@'localhost' IDENTIFIED BY 'routewise_app_pw';
 -- rights earlier versions gave and this one does not (no-ops on a fresh install)
-REVOKE IF EXISTS UPDATE, DELETE ON public_transport.Ticket FROM 'routewise_app'@'localhost' IGNORE UNKNOWN USER;
+REVOKE IF EXISTS INSERT, UPDATE, DELETE ON public_transport.Ticket FROM 'routewise_app'@'localhost' IGNORE UNKNOWN USER;
 REVOKE IF EXISTS UPDATE ON public_transport.Schedule FROM 'routewise_app'@'localhost' IGNORE UNKNOWN USER;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Passenger TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Driver    TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Route     TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Vehicle   TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, DELETE ON public_transport.Schedule          TO 'routewise_app'@'localhost';
-GRANT SELECT, INSERT ON public_transport.Ticket                    TO 'routewise_app'@'localhost';   -- changes go through the procedures
+GRANT SELECT ON public_transport.Ticket                            TO 'routewise_app'@'localhost';   -- written only by the procedures
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Feedback  TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.AppUser   TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.LoginAttempt TO 'routewise_app'@'localhost';
@@ -1199,11 +1247,12 @@ SELECT * FROM (
 ) AS f
 WHERE NOT EXISTS (SELECT 1 FROM Feedback);
 
--- A fresh install already contains everything up to version 6.
+-- A fresh install already contains everything up to version 7.
 INSERT IGNORE INTO SchemaVersion (Version, Name) VALUES
 (1, 'baseline: bookings, audit trail, roles, least-privilege user'),
 (2, 'travel dates, fare rules, type check, audit actor, schema versioning'),
 (3, 'seat map, service days and holidays, full-text search, stored sign-in limit'),
 (4, 'seat holds, partitioned audit trail, departure board, invoker-rights maintenance routines'),
 (5, 'DATETIME partitions, ScheduleDay table, one-day vehicle swaps, payment ledger'),
-(6, 'update rules: immutable tickets, checked schedule and vehicle changes, append-only ledger and audit');
+(6, 'update rules: immutable tickets, checked schedule and vehicle changes, append-only ledger and audit'),
+(7, 'tickets only through the procedures, route type and holiday checks, no vehicle retired under booked passengers');

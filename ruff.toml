@@ -1,0 +1,13 @@
+# Lint settings (ruff check .); CI runs the same command.
+line-length = 160
+exclude = [".venv", "tools/node_modules", "backups"]
+
+[lint]
+select = ["E", "F", "W", "B", "I"]
+
+[lint.per-file-ignores]
+# the schema fingerprint is one SQL statement per line, kept whole so each fact type reads as a unit
+"tests/test_operations.py" = ["E501"]
+
+# released generators stop before their imports (sys.exit) so they cannot be re-run by mistake
+"migrations/make_000[3-6].py" = ["E402"]

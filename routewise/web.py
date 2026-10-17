@@ -8,7 +8,7 @@ from flask import flash, redirect, render_template, request, session, url_for
 from . import app
 from .db import friendly_error
 
-PUBLIC_ENDPOINTS = {'login', 'static', 'healthz'}
+PUBLIC_ENDPOINTS = {'login', 'static', 'healthz', 'metrics'}   # /metrics checks its own token
 
 
 def val(name):

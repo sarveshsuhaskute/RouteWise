@@ -99,7 +99,8 @@ REPORTS = [
              "GROUP BY ST.Position\n"
              "ORDER BY Tickets DESC;")},
     {'title': 'Takings by payment method (cash-up)',
-     'desc': 'GROUP BY ... WITH ROLLUP over the payment ledger of the last 30 days: subtotals per method and a grand total; GROUPING() labels the summary rows.',
+     'desc': 'GROUP BY ... WITH ROLLUP over the payment ledger of the last 30 days: subtotals per method and a grand total; '
+             'GROUPING() labels the summary rows.',
      'sql': ("SELECT IF(GROUPING(Method), 'All methods', Method) AS Method,\n"
              "       IF(GROUPING(Kind), 'Net', Kind) AS Kind,\n"
              "       COUNT(*) AS Entries, SUM(Amount) AS Amount\n"

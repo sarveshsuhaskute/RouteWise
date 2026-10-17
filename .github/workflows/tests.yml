@@ -17,7 +17,9 @@ jobs:
           sudo systemctl start mysql.service
           mysql -uroot -proot -e "SELECT VERSION(); SHOW VARIABLES LIKE 'event_scheduler';"
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
       - name: Run the test suite (builds and drops its own throw-away databases)
         env:
           MYSQL_ADMIN_USER: root
