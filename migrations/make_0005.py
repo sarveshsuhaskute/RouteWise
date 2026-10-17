@@ -12,6 +12,7 @@ Released migrations never change: 0002 to 0004 were generated the same way from 
 import os
 import sys
 
+sys.exit("0005 is released and frozen: it was generated from the version-5 schema. New changes go into a new migration.")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 schema = open(os.path.join(HERE, '..', 'schema.sql')).read()

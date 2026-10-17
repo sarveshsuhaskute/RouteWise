@@ -8,7 +8,9 @@ It initialises two empty MySQL data directories in a temporary folder and starts
   replica  - read-only (super_read_only), replicating from the primary with GTID auto-positioning
 Then it books tickets on the primary through BookTicket (the triggers fire there; row-based replication ships the
 resulting rows, so triggers do not run twice), waits until the replica has them, measures the delay, shows that the
-replica refuses writes, runs a report query on the replica, and finally stops both servers and deletes the folder.
+replica refuses writes and runs a report query on the replica. Then it plays a failover: the primary is shut down, the
+replica is promoted (replication stopped and forgotten, read-only switched off) and takes bookings itself, with every
+ticket sold before the failure still there. Finally it stops both servers and deletes the folder.
 
 Needs the `mysqld` and `mysql` programs of a MySQL 8.0.23+ installation on the PATH.
 """
@@ -160,6 +162,26 @@ def main():
         say('Reports can run on the replica (as the application user, which replicated too):')
         for r in report:
             say(f'  {r["RouteName"]:<14} {r["TicketsSold"]:>4} tickets  {r["Revenue"]:>9}')
+
+        # failover: the primary fails, the replica is promoted by hand and becomes the new primary
+        say('Failover: the primary is shut down ...')
+        primary.stop()
+        down = time.perf_counter()
+        replica.sql('STOP REPLICA')
+        replica.sql('RESET REPLICA ALL')                    # forget the old primary
+        replica.sql('SET GLOBAL super_read_only = OFF')
+        replica.sql('SET GLOBAL read_only = OFF')
+        conn = replica.connect(database='public_transport')
+        cur = conn.cursor()
+        cur.execute("SET @actor = 'after-failover', @pay_method = 'Card'")
+        cur.callproc('BookTicket', [4, 2, '9D', None, None])
+        conn.close()
+        result['failover_seconds'] = round(time.perf_counter() - down, 2)
+        after = replica.sql("SELECT COUNT(*) AS t, (SELECT (SELECT SUM(Amount) FROM Payment) = (SELECT SUM(Fare) FROM Ticket)) AS balanced "
+                            "FROM Ticket WHERE ScheduleID = 2 AND SeatNo IN ('9A', '9B', '9C', '9D')", 'public_transport')[0]
+        result['after_failover'] = {'tickets': after['t'], 'ledger_balanced': bool(after['balanced'])}
+        say(f'The promoted replica took a new booking {result["failover_seconds"]} s after the primary went down; '
+            f'it holds all {after["t"]} tickets (3 from before the failure) and its ledger still balances')
     finally:
         replica.stop()
         primary.stop()

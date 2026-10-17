@@ -5,7 +5,7 @@
 A secure, role-based web application for running a city's buses and metro: routes, timetables with service days and
 public holidays, fleet with a seat map per vehicle, drivers, passengers, seat-by-seat ticket booking and feedback.
 The MySQL database does the heavy lifting — constraints, views, functions, stored procedures with transactions and a cursor,
-seventeen triggers, seat holds that expire, one-day vehicle swaps, a payment ledger kept by triggers, three scheduled
+twenty-seven triggers (checking every insert, update and delete), seat holds that expire, one-day vehicle swaps, a payment ledger kept by triggers, three scheduled
 events, a range-partitioned audit trail, FULLTEXT search, data-driven fares, versioned migrations, least-privilege database
 users and a demonstrated primary/replica setup — and Flask provides the interface.
 
@@ -58,7 +58,8 @@ switched off.
 - CSRF token required on every POST; HttpOnly + SameSite session cookies; private pages are not cached
 - All SQL uses parameterised queries (search terms included: FULLTEXT operators typed by a user are stripped); templates auto-escape output; CSV export neutralises spreadsheet formulas
 - **The application connects as a least-privilege database user (`routewise_app`), not root.** It cannot create, alter
-  or drop anything, and it can only *read* the audit table, the seat map and the seat holds — only triggers and the `HoldSeat`
+  or drop anything; tickets it can only create and read (cancelling and transferring run inside the stored procedures);
+  and it can only *read* the audit table, the payment ledger, the seat map and the seat holds — only triggers and the `HoldSeat`
   procedure write to those. The maintenance routines `GenerateSeats` and `ExtendAuditPartitions` run with the **caller's**
   rights (`SQL SECURITY INVOKER`), so the triggers and events can use them and the application cannot
 - E-ticket QR codes carry an HMAC signature over the ticket's trip, seat and passenger, so a changed or made-up code is
@@ -117,11 +118,11 @@ triggers and keep no foreign keys (tickets are deleted when cancelled); `LOGINAT
 | Views | `BookingSummary`, `ScheduleOccupancy` (today, incl. whether it runs today), `TripOccupancy` (any date), `RouteRevenue`, `RouteRatings`, `ActiveVehicle`, `DepartureBoard` | Dashboard, departure board and reporting; `ActiveVehicle` is updatable `WITH CHECK OPTION` |
 | Functions | `TripVehicle(schedule, date)`, `SeatsLeft(schedule, date)`, `CalcFare(passenger, schedule)`, `RunsOn(schedule, date)` | The vehicle a trip really uses (a one-day swap or the scheduled one); free seats of a trip; fare = max(MinFare, distance × RatePerKm) minus the card discount, **read from tables**; whether a departure runs on a date (service days and holidays) |
 | Procedures | `BookTicket`, `CancelTicket`, `TransferTicket`, `HoldSeat`, `AddSchedule`, `RouteScorecard`, `GenerateSeats`, `ExtendAuditPartitions` | Booking with date rules (not in the past, at most 30 days ahead); **transfer as one all-or-nothing transaction** (`START TRANSACTION`, exit handler, `ROLLBACK`); **seat holds** under the same row lock as bookings; a **cursor** that scores and grades every route; seat-map generation with a recursive CTE; partition maintenance with dynamic DDL (`REORGANIZE PARTITION`) |
-| Triggers (17) | `PreventDoubleSeat` → `CheckServiceDay` → `CheckCapacity` → `ValidateSeat` on Ticket (ordered with `FOLLOWS`); `AuditBooking` → `ReleaseHold` → `RecordSale`, `AuditCancellation` → `RecordRefund`; `PreventVehicleOverlap`, `CheckVehicleRouteType`, `DefaultServiceDays` on Schedule; `GuardServiceDay` on ScheduleDay; `CheckVehicleSwap`, `CheckSwapRemoval` on VehicleSwap; `CreateSeats`, `ResizeSeats` on Vehicle | Reject a taken seat or one held by another clerk, a day the departure does not run, a full or out-of-service vehicle, a seat the vehicle does not have, overlapping runs, a vehicle on a route of the wrong type; write the audit trail with the actor; post a sale and a refund to the payment ledger; release a hold once its seat is booked; give a new departure every day and keep at least one; let a swap through only if the replacement is active, of the right type, free at that time and has every seat already sold; keep the seat map in step with the vehicle and refuse a change that would remove a seat booked for an upcoming trip |
+| Triggers (27) | `PreventDoubleSeat` → `CheckServiceDay` → `CheckCapacity` → `ValidateSeat` on Ticket (ordered with `FOLLOWS`); `AuditBooking` → `ReleaseHold` → `RecordSale`, `AuditCancellation` → `RecordRefund`; `PreventVehicleOverlap`, `CheckVehicleRouteType`, `DefaultServiceDays` on Schedule; `GuardServiceDay` on ScheduleDay; `CheckVehicleSwap`, `CheckSwapRemoval` on VehicleSwap; `CreateSeats`, `ResizeSeats` on Vehicle; **update rules:** `ProtectTicket`, `CheckScheduleChange`, `CheckVehicleChange`, `ProtectSeat`, `ProtectServiceDay`, `ProtectSwap`; **append-only ledgers:** `ProtectPaymentUpdate`/`Delete`, `ProtectAuditUpdate`/`Delete` | Reject a taken seat or one held by another clerk, a day the departure does not run, a full or out-of-service vehicle, a seat the vehicle does not have, overlapping runs, a vehicle on a route of the wrong type; write the audit trail with the actor; post a sale and a refund to the payment ledger; release a hold once its seat is booked; give a new departure every day and keep at least one; let a swap through only if the replacement is active, of the right type, free at that time and has every seat already sold; keep the seat map in step with the vehicle and refuse a change that would remove a seat booked for an upcoming trip; **check every UPDATE as strictly as an INSERT** — a sold ticket is never edited (it is cancelled or transferred, so the ledger and the audit trail stay true), a departure that changes vehicle, times or route passes the overlap and type checks and keeps every sold seat, a vehicle that runs departures keeps its type, seat labels, service days and swaps are not rewritten; the payment ledger and the audit trail refuse UPDATE and DELETE **for every account, root included** (a mistake is corrected by a new entry; old audit quarters are archived with `DROP PARTITION`) |
 | Events (3) | `PurgeLoginAttempts` (hourly), `PurgeSeatHolds` (every minute), `MaintainAuditPartitions` (monthly) | Housekeeping inside MySQL: old sign-in failures, expired seat holds, and at least six months of future audit partitions |
-| Constraints | 17 `CHECK` (fare, seat label, travel-date window, capacity, seats per row, seat position, service days, rating, times, status, role ...), 11 foreign keys, `UNIQUE (ScheduleID, TravelDate, SeatNo)` | Integrity enforced inside the database |
+| Constraints | 20 `CHECK` (fare, seat label, travel-date window, capacity, seats per row, seat position, weekday, payment kind/method/sign, rating, times, status, role ...), 15 foreign keys, `UNIQUE (ScheduleID, TravelDate, SeatNo)` | Integrity enforced inside the database |
 | Indexes | B-tree: `Ticket.PassengerID`, `Ticket.TravelDate`, `Schedule.RouteID`, `Schedule.VehicleID`, `Feedback.RouteID`, `Passenger.Phone`, the unique trip-seat key; **FULLTEXT:** `Passenger(Name, Email)`, `Route(RouteName, Origin, Destination)` | Faster joins and search — measured on 200,000 rows (see below) |
-| Privileges | user `routewise_app` | Read/write business tables, update fare rules, manage holidays, service days and swaps, **read-only audit trail, payment ledger, seat map and seat holds**, execute routines (invoker-rights maintenance routines excepted), nothing else |
+| Privileges | user `routewise_app` | Read/write business tables (tickets: create and read only), update fare rules, manage holidays, service days and swaps, **read-only audit trail, payment ledger, seat map and seat holds**, execute routines (invoker-rights maintenance routines excepted), nothing else |
 
 ### Normalisation: every relation is in BCNF
 Each non-trivial functional dependency has a candidate key on its left side:
@@ -218,7 +219,7 @@ from `schema.sql` on the first start, and `/healthz` reports whether the app can
 | Index benchmark on 200,000 rows | `python scripts/benchmark.py` → `benchmarks/results.json` |
 | Time every report (use on large data) | `DB_NAME=… python scripts/report_timings.py` |
 | See isolation levels and locking in action | `python scripts/isolation_demo.py` |
-| See primary/replica replication (two private servers) | `python scripts/replication_demo.py` |
+| See primary/replica replication and a failover (two private servers) | `python scripts/replication_demo.py` |
 | Run the accessibility audit | `npm install --prefix tools axe-core@4.10 puppeteer-core@23 && node tools/a11y_audit.js http://127.0.0.1:5000` |
 | Create or reset an administrator | `python scripts/create_admin.py <username> ["Full name"]` |
 | Change the application's database password | `scripts/set_app_password.sh 'new-password'` |
@@ -232,9 +233,10 @@ again). `0003` added the seat map — existing tickets were relabelled to seats 
 k-th seat — and `0004` (generated by `migrations/make_0004.py`) adds seat holds and turns the audit table into a partitioned
 table. The structural part of each is hand-written; the new tables, indexes, functions, views, procedures, triggers, events
 and grants are copied verbatim from `schema.sql`. `0005` turns the service-day SET column into `ScheduleDay` rows, opens the payment ledger with one cash sale per existing
-ticket and re-partitions the audit trail on a DATETIME. A test upgrades a version-1 database through versions 2 to 5 and
-compares **283 schema facts** (columns, indexes, checks, foreign keys, triggers, routines and their security mode, events,
-partitions, views) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat. Version 3 also renames the application's database user; `migrate.py` removes the old account
+ticket and re-partitions the audit trail on a DATETIME. `0006` adds the update rules and the append-only ledgers and
+takes back the application's UPDATE/DELETE rights on tickets (`REVOKE IF EXISTS`). A test upgrades a version-1 database
+through versions 2 to 6 and compares **352 schema facts** (columns, indexes, checks, foreign keys, triggers, routines and
+their security mode, events, partitions, views and the application user's privileges) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat. Version 3 also renames the application's database user; `migrate.py` removes the old account
 only when no other database still uses it.
 
 ### Large sample data and pagination
@@ -273,10 +275,11 @@ Measured by `scripts/benchmark.py` (mean of 15 runs; numbers vary a little per m
 | Name search: `MATCH … AGAINST` vs `LIKE '%word%'` | 0.16 ms | 41.2 ms | ≈ 257× | `fulltext` on `ft_passenger` → full scan `ALL` |
 
 ## Tests
-111 end-to-end tests, run on every push by GitHub Actions: **vehicle swaps** (the replacement's seat map, every refusal
+115 end-to-end tests, run on every push by GitHub Actions: **update rules** (tickets never edited, departure and vehicle
+changes checked, ledger and audit trail append-only even for root), **vehicle swaps** (the replacement's seat map, every refusal
 rule, removal), **the payment ledger** (sale, refund, transfer, balance, validation, the ROLLUP report), **service-day rows**
 (daily by default, atomic AddSchedule, sold days kept), **replication** (two private servers, rows and trigger output arrive,
-writes refused on the replica), authentication, roles, CSRF, **the seat map** (generation, layout,
+writes refused on the replica, failover to the promoted replica with nothing lost), authentication, roles, CSRF, **the seat map** (generation, layout,
 validation, resizing that never drops a booked seat), **seat holds** (blocking colleagues, one per clerk, expiry, release on
 booking), **e-tickets and their verification** (valid, future, tampered, cancelled, transferred), **partitioning** (layout,
 pruning, automatic extension), the departure board, **service days and public holidays**, **FULLTEXT search and its query
@@ -317,6 +320,7 @@ tests/              automated test suite;  .github/workflows/  CI
 ## Known limits
 - No live vehicle positions (GPS) and no passenger-facing app: these need outside services. The departure board is worked out from the timetable.
 - Replication is demonstrated (`scripts/replication_demo.py`) and the app can read reports from a replica (`DB_REPLICA_HOST`),
-  but there is no automatic failover. Only the audit table is partitioned: InnoDB partitioning does not support foreign keys,
+  and the demo performs a manual failover (the replica is promoted and takes bookings with every earlier ticket intact),
+  but nothing detects a failed primary automatically (MySQL InnoDB Cluster / Group Replication would). Only the audit table is partitioned: InnoDB partitioning does not support foreign keys,
   which every other large table relies on.
 - Payments are recorded (method and reference), not taken: there is no card or UPI gateway.
