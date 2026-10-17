@@ -243,7 +243,7 @@ and grants are copied verbatim from `schema.sql`. `0005` turns the service-day S
 ticket and re-partitions the audit trail on a DATETIME. `0006` adds the update rules and the append-only ledgers and
 takes back the application's UPDATE/DELETE rights on tickets (`REVOKE IF EXISTS`); `0007` takes back its INSERT on tickets
 too and adds the route-type, holiday and vehicle-retirement rules. A test upgrades a version-1 database
-through versions 2 to 7 and compares **the full schema fingerprint** (more than 350 facts) (columns, indexes, checks, foreign keys, triggers, routines and
+through versions 2 to 7 and compares **354 schema facts** (columns, indexes, checks, foreign keys, triggers, routines and
 their security mode, events, partitions, views and the application user's privileges) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat. Version 3 also renames the application's database user; `migrate.py` removes the old account
 only when no other database still uses it.
 
