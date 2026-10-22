@@ -247,6 +247,8 @@ through versions 2 to 7 and compares **354 schema facts** (columns, indexes, che
 their security mode, events, partitions, views and the application user's privileges) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat.
 
 ### Large sample data and pagination
+The exact demo database (24,811 tickets) is also in the repository as a compressed dump: see `data/README.md`.
+
 `schema.sql` seeds a small, readable demo (13 passengers, 24 tickets for today, 12 departures including a weekday-only and
 a weekend-only one). To see the system at a realistic size, run the loader:
 
