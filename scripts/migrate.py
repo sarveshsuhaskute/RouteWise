@@ -79,24 +79,7 @@ def main():
         r = mysql([db], stdin=sql)
         if r.returncode != 0:
             sys.exit(f'Migration {version} failed:\n{r.stderr}\nRestore the backup with scripts/restore.sh if the database is now inconsistent.')
-    retire_old_app_user(db)
     print(f'Done. {db} is now at version {current_version(db)}.')
-
-
-def retire_old_app_user(db):
-    """Version 3 renamed the application's database user. Drop the old account, but only when no other existing
-    database still relies on it (MySQL accounts are server-wide)."""
-    old = 'routewise_app'
-    if scalar(db, f"SELECT COUNT(*) FROM mysql.user WHERE user = '{old}'") != '1':
-        return
-    others = scalar(db, f"SELECT COUNT(*) FROM (SELECT db FROM mysql.db WHERE user = '{old}' UNION SELECT db FROM mysql.tables_priv "
-                        f"WHERE user = '{old}' UNION SELECT db FROM mysql.procs_priv WHERE user = '{old}') g "
-                        f"JOIN information_schema.schemata s ON s.schema_name = g.db WHERE g.db <> '{db}'")
-    if others == '0':
-        mysql([db, '-e', f"DROP USER IF EXISTS '{old}'@'localhost'"])
-        print(f'  Removed the old database account {old} (the application now uses routewise_app).')
-    else:
-        print(f'  Kept the old database account {old}: {others} other database(s) still use it.')
 
 
 if __name__ == '__main__':

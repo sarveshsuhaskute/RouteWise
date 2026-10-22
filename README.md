@@ -244,8 +244,7 @@ ticket and re-partitions the audit trail on a DATETIME. `0006` adds the update r
 takes back the application's UPDATE/DELETE rights on tickets (`REVOKE IF EXISTS`); `0007` takes back its INSERT on tickets
 too and adds the route-type, holiday and vehicle-retirement rules. A test upgrades a version-1 database
 through versions 2 to 7 and compares **354 schema facts** (columns, indexes, checks, foreign keys, triggers, routines and
-their security mode, events, partitions, views and the application user's privileges) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat. Version 3 also renames the application's database user; `migrate.py` removes the old account
-only when no other database still uses it.
+their security mode, events, partitions, views and the application user's privileges) with a fresh install — they are identical, no ticket or fare is lost and every ticket names a real seat.
 
 ### Large sample data and pagination
 `schema.sql` seeds a small, readable demo (13 passengers, 24 tickets for today, 12 departures including a weekday-only and

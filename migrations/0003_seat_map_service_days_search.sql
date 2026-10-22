@@ -1,6 +1,6 @@
 -- =====================================================================
 --  Migration 0003: seat map, service days and public holidays, FULLTEXT search, stored sign-in limit,
---  scheduled clean-up event, application user renamed to routewise_app
+--  scheduled clean-up event, updated application user privileges
 --  Upgrades a version-2 database in place. Every existing ticket keeps its passenger, trip and fare; its seat is
 --  relabelled to a seat of the new seat map (the k-th ticket of a trip gets the k-th seat).
 --  Run it with:  python scripts/migrate.py      (it takes a backup first)
@@ -478,8 +478,7 @@ DROP EVENT IF EXISTS PurgeLoginAttempts;
 CREATE EVENT PurgeLoginAttempts ON SCHEDULE EVERY 1 HOUR
 DO DELETE FROM LoginAttempt WHERE FirstFailure < NOW() - INTERVAL 1 DAY;
 
--- database user privileges: the application user is now routewise_app
--- (scripts/migrate.py removes the old routewise_app account once no other database uses it)
+-- database user privileges
 CREATE USER IF NOT EXISTS 'routewise_app'@'localhost' IDENTIFIED BY 'routewise_app_pw';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Passenger TO 'routewise_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_transport.Driver    TO 'routewise_app'@'localhost';
